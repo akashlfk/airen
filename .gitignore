@@ -1,0 +1,44 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+
+# secrets — NEVER commit
+.env
+.env.*
+!.env.example
+.envrc
+*sa-key*.json
+*service-account*.json
+*credentials*.json
+google-credentials*.json
+
+# tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# os
+.DS_Store
+
+# phoenix local data
+.phoenix/
+phoenix.db
+phoenix.db-*
+
+# logs
+*.log
+logs/
+
+# editor / IDE
+.idea/
+.vscode/
+
+# AI-tool local settings (per-developer, not project state)
+.claude/
+.gemini/
+
+# Extracted training baselines — derived from customer training data,
+# stored in s3://<airen-bucket>/akash/airen-baselines/ for testing instead.
+# Re-extract from S3 source via `python -m scripts.extract_baseline`.
+baselines/

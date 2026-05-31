@@ -1,0 +1,40 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+
+# secrets — never bake into image
+.env
+.env.*
+!.env.example
+*sa-key*.json
+*credentials*.json
+google-credentials*.json
+
+# tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# os
+.DS_Store
+
+# phoenix local data
+.phoenix/
+phoenix.db
+phoenix.db-*
+
+# logs (recreated in container)
+logs/
+*.log
+
+# editor
+.idea/
+.vscode/
+
+# docs/dev-only
+MLRE-technical-blueprint.md
+ui/
+
+# CI
+.github/

@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+{% block title %}LIVE — Agent feed{% endblock %}
+
+{% block content %}
+
+<section class="live-header">
+  <div class="live-title-row">
+    <span class="live-pulse"></span>
+    <h1 class="live-title">LIVE — Agent feed</h1>
+    <span class="live-status-pill" id="conn-status">connecting…</span>
+  </div>
+  <p class="live-sub">
+    Real-time stream of state transitions from the Orchestrator state machine.
+    Trigger a new run from the CLI to watch it play out here:
+    <code>python -m airen.run_orchestrator tl-eta</code>
+  </p>
+  {% if target_run_id %}
+    <div class="live-target">tailing: <code>{{ target_run_id }}</code>
+      {% if auto_follow %}<span class="live-target-note">(most recent run; refresh for newer)</span>{% endif %}
+    </div>
+  {% else %}
+    <div class="live-target live-empty">no runs yet — kick one off from the CLI</div>
+  {% endif %}
+</section>
+
+<ol class="timeline live-timeline" id="event-log">
+  <!-- Server pushes <li> entries via SSE -->
+</ol>
+
+<div id="terminal-banner" class="terminal-banner" style="display: none;">
+  <span class="terminal-icon">✓</span>
+  <span class="terminal-text">Run complete</span>
+  <a id="incident-link" class="terminal-link" href="#">View full incident →</a>
+</div>
+
+{% if target_run_id %}
+<script>
+const runId = {{ target_run_id | tojson }};
+const log = document.getElementById('event-log');
+const status = document.getElementById('conn-status');
+const banner = document.getElementById('terminal-banner');
+const link = document.getElementById('incident-link');
+
+const sigilFor = (state) => ({
+  'IDLE': '·',
+  'MONITORING': '🛡',
+  'HEALTHY_NO_ACTION': '🟢',
+  'ANOMALY_DETECTED': '⚠️',
+  'INVESTIGATING': '🔎',
+  'RCA_DRAFTING': '📝',
+  'NOTIFYING': '📣',
+  'AWAITING_APPROVAL': '⏸',
+  'REMEDIATING': '🔧',
+  'VALIDATING': '✅',
+  'RESOLVED': '✓',
+  'FAILED': '✗',
+}[state] || '•');
+
+const humanizeIso = (iso) => {
+  try {
+    const d = new Date(iso);
+    return d.toLocaleTimeString();
+  } catch { return iso; }
+};
+
+const appendEvent = (evt) => {
+  const li = document.createElement('li');
+  li.className = 'timeline-item state-' + (evt.state || '').toLowerCase();
+  li.style.animation = 'fadeIn 0.3s ease-out';
+  li.innerHTML = `
+    <span class="timeline-time">${humanizeIso(evt.timestamp)}</span>
+    <span class="timeline-state">${sigilFor(evt.state)} ${evt.state}</span>
+    ${evt.agent ? '<span class="timeline-agent">' + evt.agent + '</span>' : ''}
+    <span class="timeline-msg">${(evt.message || '').replace(/</g,'&lt;')}</span>
+    ${evt.duration_ms ? '<span class="timeline-dur">' + evt.duration_ms + ' ms</span>' : ''}
+  `;
+  log.appendChild(li);
+  // Auto-scroll
+  li.scrollIntoView({behavior: 'smooth', block: 'end'});
+};
+
+const evtSource = new EventSource('/events/' + runId);
+
+evtSource.onopen = () => {
+  status.textContent = 'live';
+  status.className = 'live-status-pill live-status-open';
+};
+
+evtSource.addEventListener('state', (e) => {
+  try {
+    const evt = JSON.parse(e.data);
+    appendEvent(evt);
+  } catch (err) { console.error('parse failed', err); }
+});
+
+evtSource.addEventListener('done', (e) => {
+  try {
+    const data = JSON.parse(e.data);
+    banner.style.display = 'flex';
+    banner.className = 'terminal-banner state-' + data.final_state.toLowerCase();
+    link.href = '/incident/' + data.run_id;
+    status.textContent = data.final_state;
+    status.className = 'live-status-pill live-status-' + data.final_state.toLowerCase();
+  } catch (err) { console.error('parse done failed', err); }
+  evtSource.close();
+});
+
+evtSource.onerror = () => {
+  status.textContent = 'disconnected';
+  status.className = 'live-status-pill live-status-closed';
+};
+</script>
+{% endif %}
+
+{% endblock %}

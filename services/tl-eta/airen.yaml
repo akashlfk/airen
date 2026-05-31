@@ -1,0 +1,112 @@
+# Per-service config for FK Truckload ETA — the Fritolay-incident reference impl.
+#
+# Loader: airen.config.load_service_config("tl-eta")
+# Runner: python -m airen.run_orchestrator tl-eta
+
+service:
+  name: tl-eta
+  description: FourKites Truckload ETA — LSTM v3
+  owner_team: otr-ds
+
+phoenix:
+  project_name: tl-eta-prediction
+  collector_endpoint: http://localhost:6006
+
+github:
+  repo: cloudqwest/dynamic_eta_prediction
+  default_branch: production
+  # Feature-engineering attribute names that typically surface as code constants —
+  # Investigator greps the repo for these when an anomaly is segmented on them.
+  attributes_of_interest:
+    - api_fetch_limit
+    - seq_len
+    - max_pings
+    - batch_size
+
+slack:
+  # If alert_channel is set, Orchestrator overrides the global SLACK_CHANNEL env
+  # for posts from this service. Leave null to use the env default.
+  alert_channel: null
+  enable: true
+
+jira:
+  # Real ETAI project (FK's "ETA Intelligence" software project) — confirmed
+  # accessible via the AIREN_JIRA_* creds in .env on 2026-05-31.
+  project_key: ETAI
+  enable: true
+  # ETAI's available issue types: Story, Engineering Story, Spike, Bug,
+  # Root Cause Analysis, Defect, Tech Improvement, DS Experiment, etc.
+  # "Root Cause Analysis" (id=12010) is semantically perfect for Airen output.
+  issue_type: "Root Cause Analysis"
+  # ETAI's workflow is ML/DS-specific (statuses like Refinement In Progress,
+  # Analysis, Experiment, etc.) — none of the standard "In Progress" / "Done"
+  # transitions exist. We skip transitions and rely on comments for the full
+  # incident lifecycle. Humans drive the actual workflow status.
+  transition_on_alert: null
+  transition_on_pass: null
+  transition_on_fail: null
+
+sentinel:
+  baseline_mae_minutes: 150.0   # healthy ~120; 150 gives headroom for noise
+  warning_ratio: 1.2
+  critical_ratio: 2.0
+  default_lookback_minutes: 2880   # 48h — fits the demo span window
+  # PSI baselines — what the model was TRAINED on. Production drift away from
+  # these is what flagged the Fritolay incident.
+  attribute_baselines:
+    api_fetch_limit: "184"
+    seq_len: "48"
+    max_pings: "250"
+  psi_warning: 0.10
+  psi_critical: 0.25
+
+# ── FK-only sections (enabled only when running on the FK VM with VPN routing) ──
+redshift:
+  table: tl_eta_predictions   # placeholder; confirm with Akash's Redshift schema
+  actuals_table: tl_eta_datamart
+  conn_env_var: REDSHIFT_DSN
+  enable: false   # flip on when AIREN_REDSHIFT_MODE=real on the FK VM
+                  # Sentinel will then use 7-day rolling MAE as the baseline
+
+# Training-time baselines from S3. When enabled, Sentinel pulls the actual
+# training MAE + attribute distributions from S3 instead of using the yaml
+# values below. Falls back gracefully if the object is missing.
+s3:
+  bucket_env_var: S3_BASELINES_BUCKET
+  model_version: null   # null = always use latest.json
+  enable: true   # mock-mode by default; flip AIREN_S3_MODE=real for real S3
+
+# Each production model_family Airen monitors maps to an MLflow experiment.
+# Sentinel emits GOVERNANCE_RISK signals when a model lacks git-traceable
+# training code (see TrainingProvenance in airen/schemas.py).
+model_registry:
+  - model_family: PatchTST
+    experiment_id: "2455"
+    expected_repo: cloudqwest/dynamic_eta_prediction
+    notes: "Transformer (sequence modeling). Training: training_pipeline/auto_trainer/."
+  - model_family: CHEP_Classification
+    experiment_id: "3835"
+    expected_repo: null
+    notes: "Bin-classification ensemble (RF+LGBM+XGB). UNGOVERNED — training source is /home/eng1/vik/chep_classification.py, no git."
+  - model_family: CHEP_First_CheckCall
+    experiment_id: "3830"
+    expected_repo: null
+    notes: "First-checkcall LGBM. UNGOVERNED — same as CHEP_Classification."
+
+mlflow:
+  # Real FK MLflow tracking server is VPN-gated, no auth.
+  # Confirmed accessible 2026-05-31 via MLFLOW_TRACKING_URI=https://mlflow-dev.fourkites.com/
+  # The TL-ETA-prediction-sequence-modeling experiment (id 2455) holds the
+  # PatchTST transformer that's closest to the production LSTM in the demo
+  # storyline. Its latest run has 31 params + 9 metrics; `api_fetch_limit`
+  # is NOT among them, so Investigator's training/inference mismatch check
+  # returns the expected drift signal against real production data.
+  experiment_name: "TL-ETA-prediction-sequence-modeling"
+  tracking_uri_env_var: MLFLOW_TRACKING_URI
+  enable: true
+
+kafka:
+  bootstrap_env_var: KAFKA_BOOTSTRAP_SERVERS
+  input_topic_env_var: KAFKA_INPUT_TOPIC
+  output_topic_env_var: KAFKA_OUTPUT_TOPIC
+  enable: false   # flip on when running on FK VM

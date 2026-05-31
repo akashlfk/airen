@@ -1,0 +1,74 @@
+# Per-service config for FK Ocean ETA — proves Airen generalizes beyond
+# the Fritolay/TL scenario. Different model, different feature schema,
+# different bug class (vessel_class drift, not api_fetch_limit truncation).
+#
+# Loader: airen.config.load_service_config("ocean-eta")
+# Runner: python -m airen.run_orchestrator ocean-eta
+
+service:
+  name: ocean-eta
+  description: FourKites Ocean ETA — XGBoost v2 (transit-time prediction, hours not minutes)
+  owner_team: ocean-ds
+
+phoenix:
+  project_name: ocean-eta-prediction
+  collector_endpoint: http://localhost:6006
+
+github:
+  # Hypothetical repo for the demo — point at the real one when onboarding for real.
+  repo: cloudqwest/ocean_eta_prediction
+  default_branch: main
+  attributes_of_interest:
+    - vessel_class
+    - port_pair
+    - weather_api_version
+    - n_route_segments
+
+slack:
+  alert_channel: null   # falls back to SLACK_CHANNEL env
+  enable: true
+
+jira:
+  project_key: OCEAI         # different Jira project from TL ETA's "ETAI"
+  enable: true
+  transition_on_alert: "In Progress"
+  transition_on_pass: "Done"
+  transition_on_fail: null
+
+sentinel:
+  # Ocean transit MAE is in minutes too (so Sentinel math is unchanged), but
+  # represents hours-scale errors: healthy ≈ 240 min (4h), critical ≈ 480 min (8h).
+  baseline_mae_minutes: 240.0
+  warning_ratio: 1.2
+  critical_ratio: 2.0
+  default_lookback_minutes: 2880
+  # PSI baselines — training distribution. The demo bug is `vessel_class`
+  # drifting because a new tanker route launched without retraining.
+  attribute_baselines:
+    vessel_class: "container"
+    weather_api_version: "v3"
+  psi_warning: 0.10
+  psi_critical: 0.25
+
+# FK-only sections — disabled by default, flip on when running on FK VM
+redshift:
+  table: ocean_eta_predictions
+  actuals_table: ocean_eta_datamart
+  conn_env_var: REDSHIFT_DSN
+  enable: false
+
+s3:
+  bucket_env_var: S3_BASELINES_BUCKET
+  model_version: null   # always pull latest training baseline
+  enable: true
+
+mlflow:
+  experiment_name: ocean-eta-prod
+  tracking_uri_env_var: MLFLOW_TRACKING_URI
+  enable: false
+
+kafka:
+  bootstrap_env_var: KAFKA_BOOTSTRAP_SERVERS
+  input_topic_env_var: KAFKA_OCEAN_INPUT_TOPIC
+  output_topic_env_var: KAFKA_OCEAN_OUTPUT_TOPIC
+  enable: false

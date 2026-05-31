@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block title %}Home{% endblock %}
+
+{% block content %}
+
+<section class="section">
+  <div class="section-header">
+    <h2 class="section-title">Your models</h2>
+    <button id="run-btn" class="run-button" onclick="triggerRun()">
+      <span class="run-btn-icon">▶</span> Run new check on tl-eta
+    </button>
+  </div>
+  <script>
+    async function triggerRun() {
+      const btn = document.getElementById('run-btn');
+      btn.disabled = true; btn.classList.add('running');
+      btn.innerHTML = '<span class="run-btn-icon spin">⟳</span> kicking off…';
+      try {
+        const r = await fetch('/api/run/tl-eta', {method: 'POST'});
+        const data = await r.json();
+        if (data.live_url) { window.location.href = data.live_url; }
+        else { alert('Failed: ' + JSON.stringify(data)); btn.disabled = false; }
+      } catch (e) { alert('Network error: ' + e); btn.disabled = false; }
+    }
+  </script>
+
+  {% if not services %}
+    <div class="empty-state">No monitored services yet. Airen is idle.</div>
+  {% else %}
+    <div class="service-list">
+      {% for s in services %}
+        {% set sev = s.worst_severity %}
+        <div class="service-card sev-{{ sev|lower }}">
+          <div class="service-card-header">
+            <span class="status-dot status-{{ sev|lower }}"></span>
+            <h3 class="service-name">{{ s.name }}</h3>
+            <span class="incident-count">
+              {% if s.open_incidents %}
+                {{ s.open_incidents }} open
+              {% else %}
+                healthy
+              {% endif %}
+            </span>
+          </div>
+          <p class="service-summary">{{ s.latest_summary }}</p>
+          <div class="service-meta">last update {{ s.latest_at|humanize }}</div>
+        </div>
+      {% endfor %}
+    </div>
+  {% endif %}
+</section>
+
+<section class="section">
+  <h2 class="section-title">Recent incidents</h2>
+
+  {% if not incidents %}
+    <div class="empty-state">No incidents recorded yet.</div>
+  {% else %}
+    <ul class="incident-list">
+      {% for inc in incidents %}
+        <li class="incident-row">
+          <a class="incident-link" href="/incident/{{ inc.incident_id }}">
+            <span class="incident-id">{{ inc.incident_id }}</span>
+            {% if inc.report %}
+              <span class="severity-badge sev-{{ inc.report.severity.value|lower }}">{{ inc.report.severity.value }}</span>
+              <span class="incident-title">{{ inc.report.title }}</span>
+            {% else %}
+              <span class="severity-badge sev-warning">{{ inc.final_state.value }}</span>
+              <span class="incident-title"><em>{{ inc.final_state.value|lower|replace('_', ' ') }} — {{ inc.events[-1].message if inc.events else 'in flight' }}</em></span>
+            {% endif %}
+            <span class="incident-time">{{ inc.created_at|humanize }}</span>
+          </a>
+        </li>
+      {% endfor %}
+    </ul>
+  {% endif %}
+</section>
+
+{% endblock %}

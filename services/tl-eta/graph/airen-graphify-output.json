@@ -1,0 +1,90 @@
+{
+  "service": "tl-eta",
+  "repo": "cloudqwest/dynamic_eta_prediction",
+  "generated_at": "2026-05-30T16:31:06.962836+00:00",
+  "local_path": "/tmp/airen-cache/cloudqwest__dynamic_eta_prediction",
+  "timings_ms": {
+    "clone_or_refresh": 6061,
+    "summary": 9,
+    "find_definition": 810,
+    "find_callers": 53,
+    "find_constant_assignments": 95
+  },
+  "summary": {
+    "n_python_files": 273,
+    "n_functions": -1,
+    "n_classes": -1,
+    "languages": [
+      "python"
+    ],
+    "local_path": "/tmp/airen-cache/cloudqwest__dynamic_eta_prediction"
+  },
+  "queries": {
+    "find_definition": {
+      "symbol": "fetch_historical_checkcalls",
+      "result": {
+        "file": "predict/processing/location_service/LocationService.py",
+        "line": 40,
+        "snippet": "def fetch_historical_checkcalls(self, one_tracking_entry: Dict, limit: Optional[int] = None) -> Optional[List[Dict]]:  # pragma: no cover -- retained for backward compat, callers migrated to batch variant",
+        "kind": "assignment"
+      }
+    },
+    "find_callers": {
+      "symbol": "fetch_historical_checkcalls",
+      "n_results": 7,
+      "results": [
+        {
+          "file": "predict/processing/location_service/LocationService.py",
+          "line": 201,
+          "snippet": "#             data = self.fetch_historical_checkcalls(one_tracking_entry)"
+        },
+        {
+          "file": "tests/test_location_service_client.py",
+          "line": 40,
+          "snippet": "result = self.client.fetch_historical_checkcalls(self.test_entry)"
+        },
+        {
+          "file": "tests/test_location_service_client.py",
+          "line": 51,
+          "snippet": "result = self.client.fetch_historical_checkcalls(self.test_entry)"
+        },
+        {
+          "file": "tests/test_location_service_client.py",
+          "line": 63,
+          "snippet": "result = self.client.fetch_historical_checkcalls(test_entry)"
+        },
+        {
+          "file": "tests/component/test_location_service.py",
+          "line": 201,
+          "snippet": "result = client.fetch_historical_checkcalls(_tracking_entry())"
+        },
+        {
+          "file": "tests/component/test_location_service.py",
+          "line": 211,
+          "snippet": "result = client.fetch_historical_checkcalls(_tracking_entry())"
+        },
+        {
+          "file": "tests/component/test_location_service.py",
+          "line": 223,
+          "snippet": "result = client.fetch_historical_checkcalls(_tracking_entry())"
+        }
+      ]
+    },
+    "find_constant_assignments": {
+      "symbol": "api_fetch_limit",
+      "n_results": 2,
+      "results": [
+        {
+          "file": "main.py",
+          "line": 95,
+          "snippet": "api_fetch_limit = seq_len + api_limit_buffer"
+        },
+        {
+          "file": "predict/processing/patchtst/PatchTSTProcessor.py",
+          "line": 296,
+          "snippet": "api_fetch_limit = seq_len + api_limit_buffer"
+        }
+      ]
+    }
+  }
+}

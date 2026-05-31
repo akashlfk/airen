@@ -1,0 +1,235 @@
+{% extends "base.html" %}
+{% block title %}{{ inc.report.title }}{% endblock %}
+
+{% block content %}
+
+<a class="back-link" href="/">← back to dashboard</a>
+
+<div class="incident-header sev-{{ inc.report.severity.value|lower }}">
+  <div class="incident-meta-row">
+    <span class="incident-id-large">{{ inc.incident_id }}</span>
+    <span class="severity-badge sev-{{ inc.report.severity.value|lower }}">{{ inc.report.severity.value }}</span>
+    <span class="incident-service">{{ inc.service_name }}</span>
+    <span class="incident-when">{{ inc.created_at|humanize }}{% if inc.duration_seconds %} · resolved in {{ inc.duration_seconds|round(0)|int }}s{% endif %}</span>
+  </div>
+  <h1 class="incident-title-large">{{ inc.report.title }}</h1>
+  <p class="incident-tldr"><strong>TL;DR.</strong> {{ inc.report.tldr }}</p>
+  {% if inc.slack_permalink or inc.run.jira_issue_url %}
+    <div class="incident-links">
+      {% if inc.slack_permalink %}<a href="{{ inc.slack_permalink }}" target="_blank" rel="noopener">View Slack thread →</a>{% endif %}
+      {% if inc.run.jira_issue_url %}<a href="{{ inc.run.jira_issue_url }}" target="_blank" rel="noopener">🎫 {{ inc.run.jira_issue_key }} →</a>{% endif %}
+    </div>
+  {% endif %}
+</div>
+
+<article class="report-body">
+
+  <section class="report-section">
+    <h2>What happened</h2>
+    <div class="md">{{ inc.report.what_happened | md | safe }}</div>
+  </section>
+
+  <section class="report-section">
+    <h2>Root cause</h2>
+    <div class="md">{{ inc.report.root_cause | md | safe }}</div>
+  </section>
+
+  {% if inc.report.evidence_bullets %}
+  <section class="report-section">
+    <h2>Evidence</h2>
+    <ul class="evidence-list">
+      {% for b in inc.report.evidence_bullets %}
+        <li class="md-inline">{{ b | md | safe }}</li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endif %}
+
+  <section class="report-section">
+    <h2>Recommended fix</h2>
+    <div class="md">{{ inc.report.recommended_fix | md | safe }}</div>
+  </section>
+
+  {% if inc.report.open_questions %}
+  <section class="report-section">
+    <h2>Open questions</h2>
+    <ul class="evidence-list">
+      {% for q in inc.report.open_questions %}
+        <li>{{ q }}</li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endif %}
+
+  {% if inc.run.validator_phase1 or inc.run.validator_phase2 %}
+    <section class="report-section validator-results">
+      <h2>Validator</h2>
+      {% if inc.run.validator_phase1 %}
+        {% set v = inc.run.validator_phase1 %}
+        <div class="validator-card status-{{ v.status.value|lower }}">
+          <div class="validator-header">
+            <span class="validator-phase">Phase 1 · live recheck</span>
+            <span class="validator-status">{{ v.status.value }}</span>
+            {% if v.n_spans_observed %}<span class="validator-meta">{{ v.n_spans_observed }} spans · {{ v.lookback_minutes }}m window</span>{% endif %}
+          </div>
+          <p class="validator-summary">{{ v.summary }}</p>
+          {% if v.comparisons %}
+            <table class="comparison-table">
+              <thead>
+                <tr><th>segment</th><th>before</th><th>after</th><th>change</th><th>resolved</th></tr>
+              </thead>
+              <tbody>
+                {% for c in v.comparisons %}
+                  <tr>
+                    <td><code>{{ c.segment }}</code></td>
+                    <td>{{ "%.2f"|format(c.before_ratio) }}x</td>
+                    <td>{% if c.after_ratio is not none %}{{ "%.2f"|format(c.after_ratio) }}x{% else %}—{% endif %}</td>
+                    <td>{% if c.improvement is not none %}↓ {{ "%.2f"|format(c.improvement) }}{% else %}—{% endif %}</td>
+                    <td>{% if c.resolved %}✓{% else %}—{% endif %}</td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          {% endif %}
+          <div class="validator-next">Next: <code>{{ v.recommended_next_step }}</code></div>
+        </div>
+      {% endif %}
+      {% if inc.run.validator_phase2 %}
+        {% set v2 = inc.run.validator_phase2 %}
+        <div class="validator-card status-{{ v2.status.value|lower }}">
+          <div class="validator-header">
+            <span class="validator-phase">Phase 2 · T+24h actuals</span>
+            <span class="validator-status">{{ v2.status.value }}</span>
+          </div>
+          <p class="validator-summary">{{ v2.summary }}</p>
+        </div>
+      {% endif %}
+    </section>
+  {% endif %}
+
+  {% if inc.run.remediation_plan %}
+    {% set rp = inc.run.remediation_plan %}
+    <section class="report-section remediation-plan">
+      <h2>Remediation plan
+        {% if inc.run.remediation_result and inc.run.remediation_result.executed %}
+          <span class="exec-badge exec-ok">EXECUTED</span>
+        {% elif inc.run.remediation_result and not inc.run.remediation_result.executed %}
+          <span class="exec-badge exec-skipped">PLAN ONLY</span>
+        {% else %}
+          <span class="exec-badge exec-pending">PLAN ONLY · awaiting approval</span>
+        {% endif %}
+      </h2>
+      <div class="plan-card action-{{ rp.action_type.value|lower }}">
+        <div class="plan-row">
+          <span class="plan-label">action</span>
+          <code class="plan-value">{{ rp.action_type.value }}</code>
+          <span class="plan-confidence">confidence {{ "%.2f"|format(rp.confidence) }}</span>
+        </div>
+        {% if rp.target_commit_sha %}
+          <div class="plan-row">
+            <span class="plan-label">target commit</span>
+            <code class="plan-value">{{ rp.target_commit_sha[:8] }}</code>
+            {% if rp.target_pr_url %}
+              <a href="{{ rp.target_pr_url }}" target="_blank" rel="noopener" class="plan-link">{% if rp.target_pr_number %}PR #{{ rp.target_pr_number }}{% else %}view PR{% endif %} ↗</a>
+            {% endif %}
+          </div>
+        {% endif %}
+        {% if rp.proposed_branch_name %}
+          <div class="plan-row">
+            <span class="plan-label">proposed branch</span>
+            <code class="plan-value">{{ rp.proposed_branch_name }}</code>
+          </div>
+        {% endif %}
+        {% if rp.proposed_pr_title %}
+          <div class="plan-row">
+            <span class="plan-label">proposed PR title</span>
+            <span class="plan-value-text">{{ rp.proposed_pr_title }}</span>
+          </div>
+        {% endif %}
+        {% if rp.rationale %}
+          <p class="plan-rationale"><strong>Rationale.</strong> {{ rp.rationale }}</p>
+        {% endif %}
+        {% if rp.proposed_pr_body %}
+          <details class="plan-body-details">
+            <summary>Proposed PR body</summary>
+            <div class="md plan-pr-body">{{ rp.proposed_pr_body | md | safe }}</div>
+          </details>
+        {% endif %}
+        {% if inc.run.remediation_result and inc.run.remediation_result.pr_url %}
+          <p class="plan-executed">
+            <strong>PR opened:</strong>
+            <a href="{{ inc.run.remediation_result.pr_url }}" target="_blank" rel="noopener">{{ inc.run.remediation_result.pr_url }}</a>
+          </p>
+        {% elif inc.run.remediation_result and inc.run.remediation_result.error %}
+          <p class="plan-error"><strong>Not executed:</strong> {{ inc.run.remediation_result.error }}</p>
+        {% endif %}
+      </div>
+    </section>
+  {% endif %}
+
+</article>
+
+{% if inc.events %}
+<section class="report-section agent-timeline">
+  <h2>Agent timeline</h2>
+  <ol class="timeline">
+    {% for evt in inc.events %}
+      <li class="timeline-item state-{{ evt.state.value|lower }}">
+        <span class="timeline-time">{{ evt.timestamp|humanize }}</span>
+        <span class="timeline-state">{{ evt.state.value }}</span>
+        {% if evt.agent %}<span class="timeline-agent">{{ evt.agent }}</span>{% endif %}
+        <span class="timeline-msg">{{ evt.message }}</span>
+        {% if evt.duration_ms %}<span class="timeline-dur">{{ evt.duration_ms }} ms</span>{% endif %}
+      </li>
+    {% endfor %}
+  </ol>
+</section>
+{% endif %}
+
+{% if inc.sentinel or inc.investigator %}
+<details class="agent-trace">
+  <summary>Sub-agent raw output (Sentinel · Investigator)</summary>
+
+  {% if inc.sentinel %}
+    <div class="agent-block">
+      <h4>🛡 Sentinel</h4>
+      <div class="agent-summary">{{ inc.sentinel.summary }}</div>
+      <table class="kv">
+        <tr><th>severity</th><td>{{ "%.2f"|format(inc.sentinel.severity_score) }}</td></tr>
+        <tr><th>spans analyzed</th><td>{{ inc.sentinel.n_spans_analyzed }}</td></tr>
+        <tr><th>recommended action</th><td>{{ inc.sentinel.recommended_action.value }}</td></tr>
+      </table>
+      {% if inc.sentinel.anomalies %}
+        <ul class="anomaly-list">
+          {% for a in inc.sentinel.anomalies %}
+            <li>
+              <code>{{ a.segment }}</code> · {{ a.metric }} = {{ a.current_value }}
+              (ratio <strong>{{ a.ratio }}×</strong> baseline {{ a.baseline_value }})
+            </li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+    </div>
+  {% endif %}
+
+  {% if inc.investigator %}
+    <div class="agent-block">
+      <h4>🔎 Investigator <span class="conf">(confidence {{ "%.0f"|format(inc.investigator.confidence * 100) }}%)</span></h4>
+      <div class="agent-summary">{{ inc.investigator.root_cause_hypothesis }}</div>
+      {% for ev in inc.investigator.code_evidence %}
+        <div class="code-evidence">
+          <div class="ce-row">
+            <strong>commit</strong> <code>{{ ev.commit_sha[:8] }}</code>
+            {% if ev.commit_author %}by <strong>{{ ev.commit_author }}</strong>{% endif %}
+            {% if ev.pr_url %}· <a href="{{ ev.pr_url }}" target="_blank">PR #{{ ev.pr_number or "?" }}</a>{% endif %}
+          </div>
+          {% if ev.file_path %}<div class="ce-row"><strong>file</strong> <code>{{ ev.file_path }}</code></div>{% endif %}
+          {% if ev.diff_snippet %}<pre class="diff">{{ ev.diff_snippet }}</pre>{% endif %}
+        </div>
+      {% endfor %}
+    </div>
+  {% endif %}
+</details>
+{% endif %}
+
+{% endblock %}

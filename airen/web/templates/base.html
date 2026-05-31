@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Airen{% endblock %} · Airen</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="logo" href="/">
+      <span class="logo-mark">◈</span>
+      <span class="logo-text">airen</span>
+      <span class="logo-subtitle">ML Reliability</span>
+    </a>
+    <nav class="topbar-nav">
+      <a class="nav-link" href="/">incidents</a>
+      <a class="nav-link nav-link-live" href="/live">live ▶</a>
+      <span class="user">akash</span>
+      <span class="org">@fourkites</span>
+    </nav>
+  </header>
+
+  <main class="container">
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer class="footer">
+    <span>Airen v0.1.0 · Powered by Gemini · Phoenix observability</span>
+  </footer>
+</body>
+</html>

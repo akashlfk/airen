@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}{{ inc.incident_id }} — incomplete run{% endblock %}
+
+{% block content %}
+
+<a class="back-link" href="/">← back to dashboard</a>
+
+<div class="incident-header sev-warning">
+  <div class="incident-meta-row">
+    <span class="incident-id-large">{{ inc.incident_id }}</span>
+    <span class="severity-badge sev-warning">INCOMPLETE</span>
+    <span class="incident-service">{{ inc.service_name }}</span>
+    <span class="incident-when">{{ inc.created_at|humanize }}</span>
+  </div>
+  <h1 class="incident-title-large">Run did not complete</h1>
+  <p class="incident-tldr">
+    <strong>Final state:</strong> {{ inc.final_state.value }}
+    {% if inc.run.error %} · <strong>Error:</strong> {{ inc.run.error }}{% endif %}
+  </p>
+</div>
+
+{% if inc.events %}
+<section class="report-section">
+  <h2>Agent timeline</h2>
+  <ol class="timeline">
+    {% for evt in inc.events %}
+      <li class="timeline-item state-{{ evt.state.value|lower }}">
+        <span class="timeline-time">{{ evt.timestamp|humanize }}</span>
+        <span class="timeline-state">{{ evt.state.value }}</span>
+        {% if evt.agent %}<span class="timeline-agent">{{ evt.agent }}</span>{% endif %}
+        <span class="timeline-msg">{{ evt.message }}</span>
+        {% if evt.duration_ms %}<span class="timeline-dur">{{ evt.duration_ms }} ms</span>{% endif %}
+      </li>
+    {% endfor %}
+  </ol>
+</section>
+{% endif %}
+
+{% endblock %}

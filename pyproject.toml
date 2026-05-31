@@ -1,0 +1,39 @@
+[project]
+name = "airen"
+version = "0.1.0"
+description = "Autonomous ML Reliability Engineer — Google Cloud Rapid Agent Hackathon (Arize Track)"
+requires-python = ">=3.11,<3.12"
+authors = [{ name = "Akash Lakshmipathy" }]
+
+# Day 1 dependencies only — extend as we build.
+# Pinned versions live in requirements.txt for reproducibility.
+dependencies = [
+    # observability / tracing
+    "arize-phoenix>=7.0",
+    "arize-phoenix-otel",
+    "openinference-semantic-conventions",
+    "openinference-instrumentation-google-adk>=0.1.11",
+    "opentelemetry-api",
+    "opentelemetry-sdk",
+    "opentelemetry-exporter-otlp",
+    # agent framework
+    "google-adk>=1.32.0",
+    "google-genai>=1.9.0",
+    # config + utility
+    "python-dotenv>=1.0.1",
+    "pyyaml",
+    "pydantic>=2.0",
+    # data / ml utility
+    "numpy",
+    "pandas",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-asyncio", "ruff", "mypy"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
