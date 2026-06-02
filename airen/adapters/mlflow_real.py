@@ -16,7 +16,8 @@ from typing import Any
 
 
 class RealMLflowAdapter:
-    def __init__(self) -> None:
+    def __init__(self, *, tracking_uri: str | None = None) -> None:
+        self._tracking_uri = tracking_uri  # from airen.yaml; env fallback below
         try:
             from mlflow.tracking import MlflowClient  # noqa: F401
         except ImportError as e:
@@ -25,11 +26,12 @@ class RealMLflowAdapter:
                 "    conda run -n mlre pip install 'mlflow-skinny>=2.16'"
             ) from e
 
-        uri = os.environ.get("MLFLOW_TRACKING_URI", "").strip()
+        # Prefer the yaml-supplied tracking_uri (passed in); fall back to env.
+        uri = (self._tracking_uri or os.environ.get("MLFLOW_TRACKING_URI", "")).strip()
         if not uri:
             raise RuntimeError(
-                "MLFLOW_TRACKING_URI not set. Add it to .env "
-                "(e.g. https://mlflow-dev.fourkites.com). "
+                "MLflow tracking URI not set. Add mlflow.tracking_uri to airen.yaml "
+                "or MLFLOW_TRACKING_URI to .env (e.g. https://mlflow-dev.fourkites.com). "
                 "VPN must be active to reach internal MLflow hosts."
             )
         from mlflow.tracking import MlflowClient

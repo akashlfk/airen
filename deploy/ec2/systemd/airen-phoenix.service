@@ -1,0 +1,17 @@
+[Unit]
+Description=Airen — Phoenix observability server (SQLite-backed)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+WorkingDirectory=__REPO__
+EnvironmentFile=__REPO__/.env
+# Phoenix stores its SQLite DB under PHOENIX_WORKING_DIR (set in .env).
+ExecStart=__PY__ -m phoenix.server.main serve
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

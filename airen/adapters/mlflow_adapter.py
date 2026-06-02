@@ -16,12 +16,14 @@ from typing import Optional
 from airen.adapters.mlflow_base import MLflowAdapter
 
 
-def get_mlflow_adapter(mode: Optional[str] = None) -> MLflowAdapter:
+def get_mlflow_adapter(mode: Optional[str] = None, *, tracking_uri=None) -> MLflowAdapter:
+    """`tracking_uri` comes from airen.yaml (mlflow block); falls back to the
+    MLFLOW_TRACKING_URI env var when None."""
     resolved = (mode or os.environ.get("AIREN_MLFLOW_MODE", "mock")).strip().lower()
     if resolved == "real":
         from airen.adapters.mlflow_real import RealMLflowAdapter
 
-        return RealMLflowAdapter()
+        return RealMLflowAdapter(tracking_uri=tracking_uri)
     if resolved == "mock":
         from airen.adapters.mlflow_mock import MockMLflowAdapter
 

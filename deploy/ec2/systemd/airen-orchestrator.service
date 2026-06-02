@@ -1,0 +1,19 @@
+[Unit]
+Description=Airen — monitoring pipeline (Sentinel→Investigator→…) on a loop
+After=airen-phoenix.service network-online.target
+Wants=airen-phoenix.service
+
+[Service]
+Type=simple
+User=__USER__
+WorkingDirectory=__REPO__
+EnvironmentFile=__REPO__/.env
+# One monitoring cycle every 10 min. NO --execute → prepares PRs + posts to
+# Slack but never merges. Add --execute (and remediation.auto_merge: true in the
+# service yaml) only when you want the full merge→deploy→validate loop.
+ExecStart=__PY__ -m airen.run_orchestrator __SERVICE__ --loop 600
+Restart=always
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target

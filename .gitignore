@@ -30,6 +30,9 @@ phoenix.db-*
 *.log
 logs/
 
+# graphify manifests — regenerable repo-comprehension cache (airen.onboarding)
+graphs/
+
 # editor / IDE
 .idea/
 .vscode/

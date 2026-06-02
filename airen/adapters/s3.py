@@ -17,12 +17,15 @@ from typing import Optional
 from airen.adapters.s3_base import S3Adapter
 
 
-def get_s3_adapter(mode: Optional[str] = None) -> S3Adapter:
+def get_s3_adapter(mode: Optional[str] = None, *, bucket=None, region=None) -> S3Adapter:
+    """`bucket`/`region` come from airen.yaml (s3 block); both fall back to env
+    (S3_BASELINES_BUCKET / AWS_REGION) when None. AWS credentials are read by
+    boto3 from the standard AWS_* env vars — never passed here."""
     resolved = (mode or os.environ.get("AIREN_S3_MODE", "mock")).strip().lower()
     if resolved == "real":
         from airen.adapters.s3_real import RealS3Adapter
 
-        return RealS3Adapter()
+        return RealS3Adapter(bucket=bucket, region=region)
     if resolved == "mock":
         from airen.adapters.s3_mock import MockS3Adapter
 

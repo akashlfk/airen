@@ -18,6 +18,7 @@ import math
 from datetime import datetime, timezone
 
 from airen.adapters.phoenix import flatten_mlre, get_recent_spans
+from airen.tools.reliability import compute_reliability_signals, worst_status
 
 
 # Baseline MAE for tl-eta-prediction. Derived from healthy-regime synthetic data
@@ -88,7 +89,7 @@ def _auto_resolve_baselines(project_name: str) -> dict[str, str]:
     try:
         from airen.config import list_available_services, load_service_config
 
-        for svc in list_available_services():
+        for svc in list_available_services(include_demo=True):
             try:
                 cfg = load_service_config(svc)
             except Exception:
@@ -109,7 +110,7 @@ def _resolve_service_config(project_name: str):
     try:
         from airen.config import list_available_services, load_service_config
 
-        for svc in list_available_services():
+        for svc in list_available_services(include_demo=True):
             try:
                 cfg = load_service_config(svc)
             except Exception:
@@ -132,7 +133,7 @@ def _baseline_from_s3(cfg, default: float) -> tuple[float, dict[str, str], str |
     try:
         from airen.adapters.s3 import get_s3_adapter
 
-        adapter = get_s3_adapter()
+        adapter = get_s3_adapter(bucket=cfg.s3.bucket, region=cfg.s3.region)
         baseline = adapter.get_training_baseline(
             service=cfg.service.name,
             model_version=cfg.s3.model_version,
@@ -170,7 +171,9 @@ def _audit_model_governance(cfg) -> list[dict]:
     try:
         from airen.adapters.mlflow_adapter import get_mlflow_adapter
 
-        adapter = get_mlflow_adapter()
+        adapter = get_mlflow_adapter(
+            tracking_uri=cfg.mlflow.tracking_uri if cfg.mlflow else None
+        )
         warnings: list[dict] = []
         for entry in cfg.model_registry:
             try:
@@ -227,7 +230,7 @@ def _baseline_from_redshift_rolling(
 
         from airen.adapters.redshift import get_redshift_adapter
 
-        adapter = get_redshift_adapter()
+        adapter = get_redshift_adapter(config=cfg.redshift)
         since = datetime.now(timezone.utc) - timedelta(days=window_days)
         # Inner-join predictions with actuals on load_id; compute mean abs error.
         # Identifier safety: redshift_real validates table names; mock ignores SQL.
@@ -257,6 +260,7 @@ def _decide_status(
     segment_ratios: list[float],
     lookback_minutes: int,
     worst_psi: float = 0.0,
+    error_attr: str = "eval.absolute_error_minutes",
 ) -> dict:
     """Pure-Python status decision. No LLM involved."""
     # No-data branch
@@ -280,7 +284,7 @@ def _decide_status(
             "suggested_severity_score": 0.4,
             "suggested_action": "INVESTIGATE",
             "reason": (
-                "Spans found but no `eval.absolute_error_minutes` attribute — "
+                f"Spans found but no `{error_attr}` attribute — "
                 "telemetry pipeline may be broken."
             ),
         }
@@ -335,6 +339,100 @@ def _decide_status(
     }
 
 
+def _live_model_version(df) -> str | None:
+    """Most-common model_version in the live feed (if the spans carry it)."""
+    for col in ("model_version", "mlre.model_version"):
+        if col in df.columns:
+            vals = df[col].dropna()
+            if not vals.empty:
+                try:
+                    return str(vals.mode().iloc[0])
+                except Exception:
+                    return str(vals.iloc[0])
+    return None
+
+
+def _baseline_model_version(cfg) -> str | None:
+    """The model_version the active baseline represents — calibration artifact
+    first (cheap/local), then the S3 training baseline."""
+    if cfg is None:
+        return None
+    try:
+        import json
+        from pathlib import Path
+
+        p = Path(__file__).resolve().parent.parent.parent / "baselines" / cfg.service.name / "calibration.json"
+        if p.is_file():
+            v = json.loads(p.read_text()).get("model_version")
+            if v:
+                return str(v)
+    except Exception:
+        pass
+    try:
+        if cfg.s3 is not None and cfg.s3.enable:
+            from airen.adapters.s3 import get_s3_adapter
+
+            b = get_s3_adapter(bucket=cfg.s3.bucket, region=cfg.s3.region).get_training_baseline(
+                cfg.service.name, cfg.s3.model_version
+            )
+            if b and b.get("model_version"):
+                return str(b["model_version"])
+    except Exception:
+        pass
+    return None
+
+
+def _baseline_from_calibration(cfg) -> tuple[float | None, dict, str | None]:
+    """Read a local calibration baseline (baselines/<service>/calibration.json),
+    written by `python -m airen.run_calibrate`. This is the OPERATIONAL baseline
+    — 'what normal looked like' from live telemetry — used when no S3 training
+    baseline exists. Returns (mae, attribute_baselines, source_label)."""
+    if cfg is None:
+        return None, {}, None
+    try:
+        import json
+        from pathlib import Path
+
+        path = Path(__file__).resolve().parent.parent.parent / "baselines" / cfg.service.name / "calibration.json"
+        if not path.is_file():
+            return None, {}, None
+        data = json.loads(path.read_text())
+        mae = data.get("baseline_mae")
+        attrs = data.get("attribute_baselines") or {}
+        if mae is None and not attrs:
+            return None, {}, None
+        return mae, attrs, f"calibration@{data.get('generated_at', '?')}"
+    except Exception:
+        return None, {}, None
+
+
+_STATUS_ORDER = {"HEALTHY": 0, "MONITOR": 0, "WARNING": 1, "CRITICAL": 2}
+
+
+def _merge_reliability(decision: dict, signals: list) -> dict:
+    """Escalate the accuracy-based decision with Airen's reliability battery.
+
+    The reliability signals are the safety net: even if the headline metric
+    looks fine, a volume collapse or feature drift should still wake the
+    Investigator. Status only ever escalates, never downgrades.
+    """
+    if not signals:
+        return decision
+    rel_status = worst_status(signals)
+    cur = decision.get("suggested_status", "HEALTHY")
+    if _STATUS_ORDER.get(rel_status, 0) <= _STATUS_ORDER.get(cur, 0):
+        return decision  # accuracy signal already dominates
+    worst = max(signals, key=lambda s: s.severity)
+    label = getattr(worst, "check", getattr(worst, "name", "signal"))
+    return {
+        **decision,
+        "suggested_status": rel_status,
+        "suggested_action": "ALERT_HUMAN" if rel_status == "CRITICAL" else "INVESTIGATE",
+        "suggested_severity_score": max(decision.get("suggested_severity_score", 0.0), round(worst.severity, 2)),
+        "reason": f"{decision.get('reason', '').rstrip('.')}. Signal[{label}]: {worst.detail}",
+    }
+
+
 def get_model_health_snapshot(
     project_name: str,
     lookback_minutes: int = 60,
@@ -375,6 +473,16 @@ def get_model_health_snapshot(
                 baseline_mae_minutes = s3_mae
                 baseline_source = s3_label
             attribute_baselines = s3_attrs
+        # Calibration (operational baseline from live telemetry) — used when no
+        # S3 training baseline resolved. See airen.run_calibrate.
+        if baseline_source is None or not attribute_baselines:
+            cal_mae, cal_attrs, cal_label = _baseline_from_calibration(cfg)
+            if cal_label is not None:
+                if baseline_source is None and cal_mae is not None:
+                    baseline_mae_minutes = cal_mae
+                    baseline_source = cal_label
+                if not attribute_baselines:
+                    attribute_baselines = cal_attrs
         # Otherwise fall back to yaml
         if not attribute_baselines:
             attribute_baselines = _auto_resolve_baselines(project_name)
@@ -395,9 +503,44 @@ def get_model_health_snapshot(
     # of Phoenix spans (it asks MLflow about the registered models).
     governance_warnings = _audit_model_governance(cfg)
 
-    spans = get_recent_spans(project_name=project_name, lookback_minutes=lookback_minutes)
-    if spans.empty:
-        decision = _decide_status(0, None, [], lookback_minutes)
+    # ── Observation schema (which span attribute is the error, which to
+    #    segment on, and the metric direction) — config-driven, TL defaults.
+    if cfg is not None:
+        error_attr = cfg.observation.error_attribute
+        segment_attrs = list(cfg.observation.segments)
+        direction = cfg.observation.metric_direction
+    else:
+        error_attr = "eval.error"
+        segment_attrs = []
+        direction = "lower_is_better"
+
+    def _ratio(value: float) -> float:
+        """Ratio where >1 always means 'worse than baseline', regardless of
+        whether the metric is an error (lower better) or a score (higher better)."""
+        if baseline_mae_minutes == 0 or value == 0 or math.isnan(value):
+            return 0.0
+        if direction == "higher_is_better":
+            return round(baseline_mae_minutes / value, 2)
+        return round(value / baseline_mae_minutes, 2)
+
+    def _seg_key(v) -> str:
+        try:
+            f = float(v)
+            return str(int(f)) if f.is_integer() else str(v)
+        except (TypeError, ValueError):
+            return str(v)
+
+    # Fetch via the prediction-source dispatcher so Sentinel reads the right
+    # feed (Phoenix / Kafka / Redshift) per serving.prediction_source. Falls
+    # back to direct Phoenix when no service config resolved.
+    if cfg is not None:
+        from airen.tools.prediction_source import fetch_predictions
+
+        df_fetch = fetch_predictions(cfg, lookback_minutes)
+    else:
+        df_fetch = flatten_mlre(get_recent_spans(project_name=project_name, lookback_minutes=lookback_minutes))
+    if df_fetch.empty:
+        decision = _decide_status(0, None, [], lookback_minutes, error_attr=error_attr)
         return {
             "project_name": project_name,
             "lookback_minutes": lookback_minutes,
@@ -406,15 +549,49 @@ def get_model_health_snapshot(
             "baseline_mae_minutes": baseline_mae_minutes,
             "baseline_source": baseline_source,
             "overall_ratio_vs_baseline": None,
+            "by_segment": {},
             "by_shipper": {},
             "by_api_fetch_limit": {},
+            "reliability_signals": [],
             "governance_warnings": governance_warnings,
             "decision": decision,
         }
 
-    df = flatten_mlre(spans)
-    if "eval.absolute_error_minutes" not in df.columns:
-        decision = _decide_status(int(len(df)), None, [], lookback_minutes)
+    df = df_fetch
+
+    # Airen's always-on reliability battery — model-agnostic, baseline-free.
+    # Runs even when the accuracy metric is absent (volume/silence/schema drift
+    # are still meaningful), and can escalate the verdict on its own.
+    try:
+        reliability_signals = compute_reliability_signals(df, lookback_minutes, cfg, error_attr)
+    except Exception:
+        reliability_signals = []
+
+    # Baseline lifecycle: has the deployed model_version drifted away from the
+    # version this baseline was set for? If so, the baseline is stale.
+    try:
+        from airen.tools.reliability import version_drift_signal
+
+        vd = version_drift_signal(_live_model_version(df), _baseline_model_version(cfg))
+        if vd is not None:
+            reliability_signals.append(vd)
+    except Exception:
+        pass
+
+    reliability_dicts = [s.to_dict() for s in reliability_signals]
+
+    # User-declared custom metrics (#2) — domain knowledge on top of the battery.
+    try:
+        from airen.tools.custom_metrics import compute_custom_metrics
+
+        custom_metric_signals = compute_custom_metrics(df, cfg)
+    except Exception:
+        custom_metric_signals = []
+    custom_metric_dicts = [s.to_dict() for s in custom_metric_signals]
+
+    if error_attr not in df.columns:
+        decision = _decide_status(int(len(df)), None, [], lookback_minutes, error_attr=error_attr)
+        decision = _merge_reliability(decision, reliability_signals + custom_metric_signals)
         return {
             "project_name": project_name,
             "lookback_minutes": lookback_minutes,
@@ -423,46 +600,46 @@ def get_model_health_snapshot(
             "baseline_mae_minutes": baseline_mae_minutes,
             "baseline_source": baseline_source,
             "overall_ratio_vs_baseline": None,
+            "by_segment": {},
             "by_shipper": {},
             "by_api_fetch_limit": {},
+            "reliability_signals": reliability_dicts,
+            "custom_metrics": custom_metric_dicts,
             "governance_warnings": governance_warnings,
             "decision": decision,
         }
 
-    errors = df["eval.absolute_error_minutes"].dropna().astype(float)
+    errors = df[error_attr].dropna().astype(float)
     overall_mae = _safe_mean(errors.tolist())
 
-    by_shipper = {}
-    if "input.shipper" in df.columns:
-        for shipper, grp in df.groupby("input.shipper"):
-            e = grp["eval.absolute_error_minutes"].dropna().astype(float)
+    # Generic per-segment breakdown for every configured segment attribute.
+    by_segment: dict[str, dict] = {}
+    for seg_attr in segment_attrs:
+        if seg_attr not in df.columns:
+            continue
+        seg_map: dict[str, dict] = {}
+        for value, grp in df.groupby(seg_attr):
+            e = grp[error_attr].dropna().astype(float)
             mae = _safe_mean(e.tolist())
-            by_shipper[str(shipper)] = {
+            seg_map[_seg_key(value)] = {
                 "n": int(len(e)),
-                "mae_minutes": round(mae, 1),
-                "ratio_vs_baseline": round(mae / baseline_mae_minutes, 2),
+                "mae_minutes": round(mae, 1),    # generic metric value (key kept for back-compat)
+                "metric_value": round(mae, 1),
+                "ratio_vs_baseline": _ratio(mae),
             }
+        by_segment[seg_attr] = seg_map
 
-    by_fetch_limit = {}
-    if "input.api_fetch_limit" in df.columns:
-        for limit, grp in df.groupby("input.api_fetch_limit"):
-            e = grp["eval.absolute_error_minutes"].dropna().astype(float)
-            mae = _safe_mean(e.tolist())
-            by_fetch_limit[str(int(limit))] = {
-                "n": int(len(e)),
-                "mae_minutes": round(mae, 1),
-                "ratio_vs_baseline": round(mae / baseline_mae_minutes, 2),
-            }
+    # Back-compat aliases — downstream (validator, sentinel prompt, tests) still
+    # reference these specific keys when the TL segments are configured.
+    by_shipper = by_segment.get("input.shipper", {})
+    by_fetch_limit = by_segment.get("input.api_fetch_limit", {})
 
-    overall_ratio = (
-        round(overall_mae / baseline_mae_minutes, 2)
-        if not math.isnan(overall_mae)
-        else None
-    )
-    segment_ratios = (
-        [v["ratio_vs_baseline"] for v in by_shipper.values()]
-        + [v["ratio_vs_baseline"] for v in by_fetch_limit.values()]
-    )
+    overall_ratio = _ratio(overall_mae) if not math.isnan(overall_mae) else None
+    segment_ratios = [
+        v["ratio_vs_baseline"]
+        for seg_map in by_segment.values()
+        for v in seg_map.values()
+    ]
 
     # ── PSI drift detection ──
     psi_by_attribute: dict[str, dict] = {}
@@ -492,7 +669,9 @@ def get_model_health_snapshot(
         segment_ratios=segment_ratios,
         lookback_minutes=lookback_minutes,
         worst_psi=worst_psi,
+        error_attr=error_attr,
     )
+    decision = _merge_reliability(decision, reliability_signals + custom_metric_signals)
 
     return {
         "project_name": project_name,
@@ -502,8 +681,11 @@ def get_model_health_snapshot(
         "baseline_mae_minutes": baseline_mae_minutes,
         "baseline_source": baseline_source,
         "overall_ratio_vs_baseline": overall_ratio,
+        "by_segment": by_segment,
         "by_shipper": by_shipper,
         "by_api_fetch_limit": by_fetch_limit,
+        "reliability_signals": reliability_dicts,
+        "custom_metrics": custom_metric_dicts,
         "psi_by_attribute": psi_by_attribute,
         "worst_psi": worst_psi,
         "governance_warnings": governance_warnings,

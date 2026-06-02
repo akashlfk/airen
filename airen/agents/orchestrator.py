@@ -92,8 +92,7 @@ class AirenOrchestrator:
     """The state machine conductor. One instance per incident cycle.
 
     Usage:
-        orch = AirenOrchestrator(project="tl-eta-prediction", lookback_min=2880,
-                                 repo="cloudqwest/dynamic_eta_prediction")
+        orch = AirenOrchestrator(config=load_service_config("<service>"))
         run = await orch.run()
         print(run.final_state, run.run_id)
         # Inspect run.events for the full state trace.
@@ -116,7 +115,7 @@ class AirenOrchestrator:
             if project_name is None:
                 raise ValueError("Either `config=` or `project_name=` is required")
             self.project_name = project_name
-            self.repo = repo or "cloudqwest/dynamic_eta_prediction"
+            self.repo = repo or ""
             self.lookback_min = lookback_min or 2880
             self.alert_channel: str | None = None  # falls back to SLACK_CHANNEL
             self.post_to_slack = post_to_slack if post_to_slack is not None else True
@@ -158,31 +157,16 @@ class AirenOrchestrator:
             span.set_attribute("airen.run_id", self.run.run_id)
             span.set_attribute("airen.project", self.project_name)
             try:
+                self._refresh_repo_understanding()
+                self._ensure_baseline()
                 await self._monitor_step()
                 if self.state == OrchestratorState.HEALTHY_NO_ACTION:
                     self._transition(OrchestratorState.RESOLVED, "No action needed — system healthy.")
                 else:
                     await self._cooldown("after Sentinel")
-                    await self._investigate_step()
-                    await self._cooldown("after Investigator")
-                    await self._rca_step()
-                    await self._remediation_plan_step()
-                    await self._jira_ticket_step()
-                    await self._notify_step()
-                    if self.execute_remediation and self.run.remediation_plan is not None:
-                        # Human-in-the-loop gate. If we successfully posted to
-                        # Slack with Approve/Reject buttons, wait for the click
-                        # before opening any PR. Skips wait gracefully when no
-                        # Slack post (offline / mock / disabled).
-                        should_execute = await self._await_human_approval()
-                        if should_execute:
-                            await self._remediation_execute_step()
-                    await self._validate_step()
-                    await self._jira_on_resolved()
-                    self._transition(
-                        OrchestratorState.RESOLVED,
-                        "Incident reported. Human is in the loop.",
-                    )
+                    # The full fix → approve → merge → deploy → validate → reopen
+                    # loop. Sets its own terminal state (RESOLVED or AWAITING_HUMAN).
+                    await self._remediation_cycle()
             except Exception as e:
                 self._transition(
                     OrchestratorState.FAILED,
@@ -195,6 +179,39 @@ class AirenOrchestrator:
                 self.run.final_state = self.state
                 span.set_attribute("airen.final_state", self.state.value)
         return self.run
+
+    def _refresh_repo_understanding(self) -> None:
+        """Poll-on-cycle freshness hook: if the monitored repo's HEAD moved
+        since we last graphified it, re-graphify before investigating.
+
+        Fully best-effort — never breaks a cycle (offline / mock / no git all
+        no-op). See airen.onboarding.freshness for the rationale (no webhook
+        server needed; understanding is refreshed exactly when it matters).
+        """
+        try:
+            from airen.onboarding.freshness import maybe_refresh_manifest
+
+            status = maybe_refresh_manifest(self.config)
+            if status:
+                print(f"  🔄 GRAPHIFY                {status}")
+        except Exception:
+            pass
+
+    def _ensure_baseline(self) -> None:
+        """Auto-establish a baseline from live telemetry when none exists, so
+        Airen computes its own reference — no manual extract/S3 upload needed.
+        Best-effort; skipped in mock mode (no real feed) and never breaks a cycle.
+        """
+        if is_mock_mode():
+            return
+        try:
+            from airen.onboarding.calibrate import ensure_baseline
+
+            status = ensure_baseline(self.config) if self.config is not None else None
+            if status:
+                print(f"  📊 BASELINE                {status}")
+        except Exception:
+            pass
 
     # ─────────────────────────────────────────────────────────────────
     #  State helpers
@@ -323,6 +340,7 @@ class AirenOrchestrator:
                 f"The Phoenix project is `{self.project_name}`. Find the root cause and return "
                 f"an InvestigatorVerdict.\n\nSentinelVerdict JSON:\n"
                 f"{verdict.model_dump_json(indent=2)}"
+                f"{self._context_block()}"
             )
             raw = await _run_agent_with_retry(investigator_agent, msg)
             inv = InvestigatorVerdict.model_validate_json(extract_json(raw))
@@ -341,6 +359,18 @@ class AirenOrchestrator:
             agent="investigator",
             duration_ms=dt_ms,
             metadata={"confidence": inv.confidence, "n_evidence": len(inv.code_evidence)},
+        )
+
+    def _context_block(self) -> str:
+        """Operator-provided service context (from service.context in the yaml),
+        appended to agent prompts so the LLM has out-of-band knowledge the repo
+        doesn't contain (upstream deps, known issues, retrain/approval policy)."""
+        ctx = self.config.service.context if self.config else None
+        if not ctx:
+            return ""
+        return (
+            "\n\n--- OPERATOR CONTEXT (out-of-band knowledge about this service; "
+            "weigh it in your reasoning) ---\n" + ctx.strip()
         )
 
     async def _rca_step(self) -> None:
@@ -366,6 +396,7 @@ class AirenOrchestrator:
                 f"service_name: {self.project_name}\n\n"
                 f"SentinelVerdict JSON:\n{verdict.model_dump_json(indent=2)}\n\n"
                 f"InvestigatorVerdict JSON:\n{inv.model_dump_json(indent=2)}"
+                f"{self._context_block()}"
             )
             raw = await _run_agent_with_retry(rca_writer_agent, msg)
             report = IncidentReport.model_validate_json(extract_json(raw))
@@ -419,43 +450,218 @@ class AirenOrchestrator:
             },
         )
 
-    async def _remediation_execute_step(self) -> None:
+    @staticmethod
+    def _is_code_fix(plan) -> bool:
+        """Only these action types produce a branch + PR Airen can merge."""
+        return plan is not None and plan.action_type in (
+            RemediationActionType.REVERT_COMMIT,
+            RemediationActionType.HOTFIX_PR,
+        )
+
+    async def _remediation_prepare_step(self) -> bool:
+        """Build the branch, apply the fix, push, and open a READY (draft) PR —
+        BEFORE asking for approval, so the Slack message links a ready PR.
+        Returns True iff a PR is ready. Approval later gates the MERGE."""
         plan = self.run.remediation_plan
-        if plan is None or plan.action_type == RemediationActionType.NO_ACTION:
-            return
-        if not self.repo:
-            return
+        if plan is None or not self._is_code_fix(plan) or not self.repo:
+            return False
 
         self._transition(
-            OrchestratorState.REMEDIATING,
-            f"Executing remediation: {plan.action_type.value}…",
+            OrchestratorState.REMEDIATION_PREP,
+            f"Preparing fix ({plan.action_type.value}) — branch + PR…",
             agent="remediation",
         )
         t0 = time.perf_counter()
-        # Run in a thread since the GitHub adapter is sync
         result = await asyncio.to_thread(
-            self._remediator.execute,
-            plan,
-            repo_full_name=self.repo,
-            force=True,  # caller already opted in via execute_remediation=True
+            self._remediator.execute, plan, repo_full_name=self.repo, force=True,
         )
         dt_ms = int((time.perf_counter() - t0) * 1000)
         self.run.remediation_result = result
         if result.executed:
             self._transition(
-                OrchestratorState.REMEDIATING,
-                f"PR opened: {result.pr_url} (#{result.pr_number})",
+                OrchestratorState.REMEDIATION_PREP,
+                f"PR ready for review: {result.pr_url} (#{result.pr_number})",
                 agent="remediation",
                 duration_ms=dt_ms,
             )
-        else:
+            await self._jira_on_remediation_executed()
+            return True
+        self._transition(
+            OrchestratorState.REMEDIATION_PREP,
+            f"Could not prepare a PR: {result.error}",
+            agent="remediation",
+            duration_ms=dt_ms,
+        )
+        return False
+
+    async def _merge_step(self) -> bool:
+        """Merge the approved PR. Gated upstream by --execute + approval +
+        remediation.auto_merge. Returns True iff merged."""
+        result = self.run.remediation_result
+        if result is None or not result.pr_number:
+            return False
+        self._transition(OrchestratorState.MERGING, f"Merging PR #{result.pr_number}…", agent="remediation")
+        method = self.config.remediation.merge_method if self.config else "squash"
+        from airen.adapters import github
+
+        res = await asyncio.to_thread(github.merge_pull_request, self.repo, result.pr_number, method)
+        if res.get("merged"):
+            result.merged = True
+            result.merge_sha = res.get("sha")
+            result.merged_at = _now()
             self._transition(
-                OrchestratorState.REMEDIATING,
-                f"Remediation not executed: {result.error}",
+                OrchestratorState.MERGING,
+                f"Merged PR #{result.pr_number} ({(res.get('sha') or '')[:8]}) — CI/CD will deploy.",
                 agent="remediation",
-                duration_ms=dt_ms,
             )
-        await self._jira_on_remediation_executed()
+            return True
+        self._transition(
+            OrchestratorState.MERGING,
+            f"Merge failed: {res.get('error', 'unknown')}",
+            agent="remediation",
+        )
+        return False
+
+    async def _deploy_wait_step(self) -> None:
+        grace = self.config.remediation.deploy_grace_minutes if self.config else 5
+        self._transition(
+            OrchestratorState.DEPLOYING,
+            f"Merged — waiting ~{grace} min for CI/CD to deploy before validating…",
+            agent="orchestrator",
+        )
+        self._thread_reply(f"🔀 Merged. Waiting ~{grace} min for CI/CD to ship, then I'll watch the live feed.")
+        if not is_mock_mode():
+            await asyncio.sleep(grace * 60)
+
+    async def _validation_loop(self) -> str:
+        """Poll the live feed (via the prediction-source dispatcher) until the
+        flagged metric recovers for `recovery_window_polls` in a row, or we hit
+        `validation_max_attempts`. Returns 'PASS' or 'FAIL'."""
+        sentinel = self.run.sentinel_verdict
+        rem = self.config.remediation if self.config else None
+        max_attempts = rem.validation_max_attempts if rem else 10
+        need = rem.recovery_window_polls if rem else 2
+        interval = rem.validation_poll_interval_sec if rem else 120
+
+        self._transition(OrchestratorState.VALIDATING, "Polling the live feed to confirm the fix…", agent="validator")
+        consecutive = 0
+        for i in range(max_attempts):
+            phase1 = await self._validator.validate_phase_1(
+                sentinel=sentinel, project_name=self.project_name, lookback_minutes=10,
+            )
+            self.run.validator_phase1 = phase1
+            status = phase1.status.value
+            self._transition(
+                OrchestratorState.VALIDATING,
+                f"Validation poll {i + 1}/{max_attempts}: {status} — {phase1.summary[:90]}",
+                agent="validator",
+                metadata={"status": status},
+            )
+            if status == "PASS":
+                consecutive += 1
+                if consecutive >= need:
+                    return "PASS"
+            else:
+                consecutive = 0
+            if not is_mock_mode() and i < max_attempts - 1:
+                await asyncio.sleep(interval)
+        return "FAIL"
+
+    def _thread_reply(self, text: str) -> None:
+        """Post a reply in the incident's Slack thread (continuity)."""
+        if not self.post_to_slack or not self.run.slack_message_ts:
+            return
+        try:
+            from airen.adapters.slack import post_text
+
+            post_text(self.run.slack_channel or self.alert_channel, text, thread_ts=self.run.slack_message_ts)
+        except Exception:
+            pass
+
+    def _await_human(self, reason: str) -> None:
+        """Terminal-ish state: Airen stops auto-acting and waits for a human."""
+        self._thread_reply(f"⏸ {reason}")
+        self._transition(OrchestratorState.AWAITING_HUMAN, reason, agent="orchestrator")
+
+    async def _remediation_cycle(self) -> None:
+        """investigate → RCA → prepare PR → notify → approve → merge → deploy →
+        validate; on FAIL loop back to investigate (bounded). Sets the terminal
+        state itself (RESOLVED or AWAITING_HUMAN)."""
+        rem = self.config.remediation if self.config else None
+        max_reinv = rem.max_reinvestigate_attempts if rem else 0
+        auto_merge = bool(rem and rem.auto_merge)
+        first = True
+
+        for attempt in range(max_reinv + 1):
+            await self._investigate_step()
+            await self._cooldown("after Investigator")
+            await self._rca_step()
+            await self._remediation_plan_step()
+            plan = self.run.remediation_plan
+
+            if first:
+                await self._jira_ticket_step()
+
+            # Build the PR up front (ready) — only for executable code fixes when --execute.
+            prepared = False
+            if self.execute_remediation and self._is_code_fix(plan):
+                prepared = await self._remediation_prepare_step()
+
+            if first:
+                await self._notify_step()
+            else:
+                hypo = (self.run.investigator_verdict.root_cause_hypothesis
+                        if self.run.investigator_verdict else "")
+                self._thread_reply(f"♻️ Re-investigating (attempt {attempt + 1}): new hypothesis — {hypo[:200]}")
+            first = False
+
+            # ── No mergeable PR: recommend or fall back to single validation ──
+            if not prepared:
+                if (self.execute_remediation and plan is not None
+                        and plan.action_type != RemediationActionType.NO_ACTION
+                        and not self._is_code_fix(plan)):
+                    # e.g. RETRAIN_MODEL / ROLLBACK_DEPLOY — not auto-executable yet
+                    self._await_human(
+                        f"Recommended action: {plan.action_type.value}. Not auto-executable — "
+                        f"human needed. See the RCA recommendation."
+                    )
+                    return
+                # Not executing (plan-only / mock / demo): single re-check, then hand off.
+                await self._validate_step()
+                await self._jira_on_resolved()
+                self._transition(OrchestratorState.RESOLVED, "Incident reported. Human is in the loop.")
+                return
+
+            # ── Ready PR exists → gate the MERGE on Slack approval ──
+            approved = await self._await_human_approval()
+            if not approved:
+                self._await_human("Remediation rejected — PR left open for manual review.")
+                return
+
+            if not auto_merge:
+                url = self.run.remediation_result.pr_url if self.run.remediation_result else "(PR)"
+                self._await_human(f"PR ready: {url}. auto_merge is off — merge it manually; CI/CD will deploy.")
+                return
+
+            if not await self._merge_step():
+                self._await_human("Merge failed (conflicts/checks) — needs manual resolution.")
+                return
+
+            await self._deploy_wait_step()
+            verdict = await self._validation_loop()
+            if verdict == "PASS":
+                await self._jira_on_resolved()
+                self._thread_reply("✅ Fix confirmed — the flagged metric recovered after deploy. Closing the incident.")
+                self._transition(OrchestratorState.RESOLVED, "Merged, deployed, and validated. Incident resolved.")
+                return
+
+            # FAIL → loop back to investigate if budget remains, else hand off.
+            if attempt < max_reinv:
+                self._thread_reply("⚠️ The fix did NOT restore health. Re-investigating for another cause…")
+                await self._cooldown("before re-investigation")
+                continue
+            self._await_human("Fix didn't restore health and re-investigation budget is exhausted. Human intervention needed.")
+            return
 
     async def _validate_step(self) -> None:
         sentinel = self.run.sentinel_verdict
@@ -513,7 +719,10 @@ class AirenOrchestrator:
             agent="jira",
         )
         t0 = time.perf_counter()
-        adapter = get_jira_adapter()
+        adapter = get_jira_adapter(
+            base_url=self.config.jira.base_url if self.config else None,
+            user_email=self.config.jira.user_email if self.config else None,
+        )
         report = self.run.incident_report
 
         # Plain-text description so we don't have to deal with Atlassian Document Format
@@ -639,7 +848,10 @@ class AirenOrchestrator:
             return
         from airen.adapters.jira import get_jira_adapter
 
-        adapter = get_jira_adapter()
+        adapter = get_jira_adapter(
+            base_url=self.config.jira.base_url if self.config else None,
+            user_email=self.config.jira.user_email if self.config else None,
+        )
         result = await asyncio.to_thread(
             adapter.add_comment, self.run.jira_issue_key, body
         )
@@ -657,7 +869,10 @@ class AirenOrchestrator:
             return
         from airen.adapters.jira import get_jira_adapter
 
-        adapter = get_jira_adapter()
+        adapter = get_jira_adapter(
+            base_url=self.config.jira.base_url if self.config else None,
+            user_email=self.config.jira.user_email if self.config else None,
+        )
         result = await asyncio.to_thread(
             adapter.transition_issue, self.run.jira_issue_key, transition_name
         )

@@ -28,7 +28,7 @@ DEFAULT_REGION = "us-east-1"
 class RealS3Adapter:
     """Live S3 client via boto3. Only used when AIREN_S3_MODE=real."""
 
-    def __init__(self, bucket: str | None = None) -> None:
+    def __init__(self, bucket: str | None = None, region: str | None = None) -> None:
         try:
             import boto3  # noqa: F401
         except ImportError as e:
@@ -37,12 +37,14 @@ class RealS3Adapter:
                 "    conda run -n mlre pip install 'boto3>=1.34'"
             ) from e
 
+        # bucket/region come from airen.yaml (s3 block); fall back to env.
         resolved_bucket = (bucket or os.environ.get("S3_BASELINES_BUCKET", "")).strip()
         if not resolved_bucket:
             raise RuntimeError(
-                "S3_BASELINES_BUCKET env var is required for real S3 mode."
+                "S3 bucket not set. Add s3.bucket to airen.yaml or S3_BASELINES_BUCKET to .env."
             )
         self.bucket = resolved_bucket
+        self._region = (region or "").strip() or None
         self._client = None  # lazy
 
     def _get_client(self):
@@ -50,7 +52,7 @@ class RealS3Adapter:
             return self._client
         import boto3
 
-        region = os.environ.get("AWS_REGION", DEFAULT_REGION).strip() or DEFAULT_REGION
+        region = self._region or os.environ.get("AWS_REGION", DEFAULT_REGION).strip() or DEFAULT_REGION
         self._client = boto3.client("s3", region_name=region)
         return self._client
 

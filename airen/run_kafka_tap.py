@@ -19,8 +19,14 @@ Examples:
   # Real PEEK — last 50 messages
   python -m airen.run_kafka_tap --mode real --max 50
 
-NOTE: --rate / streaming flags only apply to --mode mock. Real mode is
-always a bounded one-shot peek; do not try to use it for continuous monitoring.
+  # Real PEEK on a LOOP — re-tap the latest 10k every 5 min to keep Phoenix
+  # fresh (each pass is still a bounded peek; Ctrl+C to stop). Good for a PoC.
+  python -m airen.run_kafka_tap --mode real --max 10000 --loop 300
+
+NOTE: --rate / streaming flags only apply to --mode mock. Each pass (even in
+loop mode) is a bounded peek of the latest N — no consumer group, no offset
+commits. --loop just repeats that peek on an interval; it is NOT a streaming
+consumer.
 """
 
 from __future__ import annotations
@@ -28,17 +34,18 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=True)
 
-from airen.instrumentation import setup_tracing
-
-PROJECT_NAME = os.environ.get("PHOENIX_PROJECT_NAME_TAP", "tl-eta-prediction")
-tracer_provider = setup_tracing()
-tracer = tracer_provider.get_tracer("mlre.ingestion.kafka_tap")
+# The tap writes spans to the MONITORED SERVICE's Phoenix project (not Airen's
+# own 'airen-dev' project), so the tracer/register happens in main() once we
+# know the project (from --service or PHOENIX_PROJECT_NAME_TAP).
+from phoenix.otel import register  # noqa: E402
 
 from airen.adapters.kafka_base import KafkaAdapter  # noqa: E402
 from airen.adapters.kafka_mock import MockKafkaAdapter  # noqa: E402
@@ -84,7 +91,36 @@ def main() -> None:
     parser.add_argument("--bugged-fraction", type=float, default=0.20, dest="bugged_fraction")
     parser.add_argument("--fail-fraction", type=float, default=0.01, dest="fail_fraction")
     parser.add_argument("--seed", type=int, default=None, help="mock: deterministic seed")
+    parser.add_argument(
+        "--service", default=None,
+        help="onboarded service name — loads its airen.yaml for the Phoenix project, "
+             "Kafka output_topic, and tap.field_map (config-driven mapping).",
+    )
+    parser.add_argument(
+        "--loop", type=int, default=0, metavar="SECONDS",
+        help="re-tap the latest N every SECONDS (0 = one-shot). Each pass is still "
+             "a bounded peek; keeps Phoenix's recent window fresh. Ctrl+C to stop.",
+    )
     args = parser.parse_args()
+
+    # Resolve the Phoenix project + (optional) config-driven field map.
+    project = os.environ.get("PHOENIX_PROJECT_NAME_TAP", "airen-tap")
+    field_map = None
+    if args.service:
+        from airen.config import load_service_config
+
+        cfg = load_service_config(args.service)
+        project = cfg.phoenix.project_name
+        field_map = cfg.tap.field_map
+        # Default the real-mode topic to the service's configured output topic.
+        if cfg.kafka and cfg.kafka.output_topic and not args.topic:
+            args.topic = cfg.kafka.output_topic
+        print(f"Using service '{args.service}': project={project}, "
+              f"topic={args.topic or '(env)'}, field_map={'yes' if field_map else 'default'}")
+
+    # Register the tracer against the SERVICE's project (not airen-dev).
+    tracer_provider = register(project_name=project, auto_instrument=False)
+    tracer = tracer_provider.get_tracer("airen.ingestion.kafka_tap")
 
     if args.mode == "real":
         if args.max is None:
@@ -97,12 +133,30 @@ def main() -> None:
         print(f"Kafka PEEK starting — latest {args.max} from {resolved_topic} (source={args.source})")
         print(f"  (ephemeral group.id, no offset commits, no subscribe — see memory/kafka_peek_only.md)")
     else:
-        print(f"Kafka MOCK starting — project={PROJECT_NAME}, rate={args.rate} msg/s, bugged={args.bugged_fraction:.0%}")
-    adapter = _build_adapter(args.mode, args)
-    tap = KafkaTap(adapter=adapter, tracer=tracer)
-    tap.run(max_messages=args.max)
+        print(f"Kafka MOCK starting — project={project}, rate={args.rate} msg/s, bugged={args.bugged_fraction:.0%}")
 
-    tracer_provider.force_flush()
+    def _one_pass() -> None:
+        # Fresh adapter each pass — a new ephemeral peek (no lingering connection).
+        adapter = _build_adapter(args.mode, args)
+        tap = KafkaTap(adapter=adapter, tracer=tracer, field_map=field_map)
+        tap.run(max_messages=args.max)
+        tracer_provider.force_flush()
+
+    if args.loop and args.loop > 0:
+        print(f"🔁 LOOP mode — re-tapping every {args.loop}s. Ctrl+C to stop.\n")
+        n = 0
+        try:
+            while True:
+                n += 1
+                ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
+                print(f"\n── pass {n} · {ts} UTC ──")
+                _one_pass()
+                print(f"💤 sleeping {args.loop}s…")
+                time.sleep(args.loop)
+        except KeyboardInterrupt:
+            print(f"\n✓ Stopped after {n} pass(es).")
+    else:
+        _one_pass()
 
 
 if __name__ == "__main__":
