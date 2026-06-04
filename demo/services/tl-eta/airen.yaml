@@ -12,6 +12,23 @@ phoenix:
   project_name: tl-eta-prediction
   collector_endpoint: http://localhost:6006
 
+# How the inference layer serves predictions → where Airen observes them.
+serving:
+  mode: sync-api              # request/response API (not streaming)
+  prediction_source: phoenix  # live feed Airen reads to judge health
+  endpoints:
+    - POST /predict
+
+# The Phoenix span schema Sentinel reads. Was hardcoded; now per-service.
+observation:
+  problem_type: regression
+  error_attribute: eval.absolute_error_minutes   # what Sentinel averages
+  metric_unit: minutes
+  metric_direction: lower_is_better
+  segments:                                       # health is broken down by these
+    - input.shipper
+    - input.api_fetch_limit
+
 github:
   repo: cloudqwest/dynamic_eta_prediction
   default_branch: production
@@ -46,6 +63,15 @@ jira:
   transition_on_pass: null
   transition_on_fail: null
 
+# User-declared custom metrics (augment Airen's always-on default battery).
+metrics:
+  - name: p95_error_minutes
+    attribute: eval.absolute_error_minutes
+    agg: p95
+    direction: lower_is_better
+    warn_ratio: 1.5
+    critical_ratio: 2.0
+
 sentinel:
   baseline_mae_minutes: 150.0   # healthy ~120; 150 gives headroom for noise
   warning_ratio: 1.2
@@ -62,9 +88,13 @@ sentinel:
 
 # ── FK-only sections (enabled only when running on the FK VM with VPN routing) ──
 redshift:
+  # Connection topology in yaml; ONLY REDSHIFT_PASSWORD lives in .env.
+  # host/database/user left null → adapter falls back to REDSHIFT_* env vars.
+  host: null
+  database: null
+  user: null
   table: tl_eta_predictions   # placeholder; confirm with Akash's Redshift schema
   actuals_table: tl_eta_datamart
-  conn_env_var: REDSHIFT_DSN
   enable: false   # flip on when AIREN_REDSHIFT_MODE=real on the FK VM
                   # Sentinel will then use 7-day rolling MAE as the baseline
 
@@ -72,7 +102,10 @@ redshift:
 # training MAE + attribute distributions from S3 instead of using the yaml
 # values below. Falls back gracefully if the object is missing.
 s3:
-  bucket_env_var: S3_BASELINES_BUCKET
+  # bucket/region in yaml; AWS creds (AWS_ACCESS_KEY_ID/SECRET) stay in .env.
+  # bucket null → falls back to S3_BASELINES_BUCKET env.
+  bucket: null
+  region: us-east-1
   model_version: null   # null = always use latest.json
   enable: true   # mock-mode by default; flip AIREN_S3_MODE=real for real S3
 
@@ -101,12 +134,18 @@ mlflow:
   # storyline. Its latest run has 31 params + 9 metrics; `api_fetch_limit`
   # is NOT among them, so Investigator's training/inference mismatch check
   # returns the expected drift signal against real production data.
+  # tracking_uri is a non-secret URL → yaml. (FK MLflow is no-auth.)
+  tracking_uri: https://mlflow-dev.fourkites.com
   experiment_name: "TL-ETA-prediction-sequence-modeling"
-  tracking_uri_env_var: MLFLOW_TRACKING_URI
   enable: true
 
 kafka:
-  bootstrap_env_var: KAFKA_BOOTSTRAP_SERVERS
-  input_topic_env_var: KAFKA_INPUT_TOPIC
-  output_topic_env_var: KAFKA_OUTPUT_TOPIC
+  # Connection topology in yaml; ONLY SASL creds (KAFKA_SASL_USERNAME/PASSWORD)
+  # live in .env. bootstrap_servers null → falls back to KAFKA_BOOTSTRAP_SERVERS env.
+  bootstrap_servers: null
+  input_topic: tl_eta_requests
+  output_topic: tl_eta_predictions
+  group_id: airen-tl-eta
+  security_protocol: SASL_SSL
+  sasl_mechanism: PLAIN
   enable: false   # flip on when running on FK VM

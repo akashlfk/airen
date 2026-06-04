@@ -202,6 +202,31 @@ python -m airen.run_orchestrator <service-name>
 python -m airen.run_orchestrator --list   # show registered services
 ```
 
+### Onboarding — don't hand-write the YAML
+
+`python -m airen.run_onboard` is the front door for pointing Airen at an ML app
+it has never seen. Two modes:
+
+```bash
+# Agentic — "graphify" the repo: clone it, deterministically detect the model
+# type(s), frameworks, serving APIs + I/O schema, Phoenix project and MLflow
+# experiment straight from the code, then interview you ONLY for what code can't
+# reveal (healthy MAE baseline, alert thresholds, where to post). Writes the yaml.
+python -m airen.run_onboard --repo owner/repo
+python -m airen.run_onboard --path /local/checkout --name my-service
+
+# Manual — pure interview, no repo (deterministic fallback)
+python -m airen.run_onboard
+python -m airen.run_onboard --minimal
+```
+
+Graphify writes a regenerable manifest to `graphs/<owner>__<repo>.json`. The
+Orchestrator **polls the repo HEAD at the start of every cycle** and
+re-graphifies automatically when the repo moves — so Airen's understanding stays
+current without any webhook server (best-effort; no-op offline / in mock mode).
+The generated config is validated against `AirenServiceConfig` before anything
+is written to disk.
+
 Agents stay generic; the config tells them which service they're working on.
 
 ---

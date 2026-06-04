@@ -70,16 +70,18 @@ def _truncate_for_jira(text: str, max_chars: int = 32000) -> str:
 class RealJiraAdapter:
     """Hits the real Atlassian Cloud REST API v2."""
 
-    def __init__(self) -> None:
-        # Prefer the AIREN_JIRA_* naming (matches .env conventions used elsewhere
-        # in this project) but accept the older ATLASSIAN_* names as fallbacks
-        # so existing setups don't break.
+    def __init__(self, *, base_url: str | None = None, user_email: str | None = None) -> None:
+        # Non-secret topology (base_url, user_email) comes from airen.yaml when
+        # provided; otherwise fall back to the AIREN_JIRA_* / ATLASSIAN_* env
+        # vars so existing setups don't break. The API token is always env-only.
         self.base_url = (
-            os.environ.get("AIREN_JIRA_BASE_URL", "").strip()
+            (base_url or "").strip()
+            or os.environ.get("AIREN_JIRA_BASE_URL", "").strip()
             or os.environ.get("ATLASSIAN_BASE_URL", "").strip()
         ).rstrip("/")
         self.email = (
-            os.environ.get("AIREN_JIRA_USER_EMAIL", "").strip()
+            (user_email or "").strip()
+            or os.environ.get("AIREN_JIRA_USER_EMAIL", "").strip()
             or os.environ.get("ATLASSIAN_USER_EMAIL", "").strip()
         )
         self.token = (

@@ -11,10 +11,16 @@ from airen.config import (
 )
 
 
-def test_lists_at_least_tl_eta_and_ocean_eta():
-    services = list_available_services()
-    assert "tl-eta" in services
-    assert "ocean-eta" in services
+def test_production_registry_excludes_demo_but_demo_resolvable():
+    # Production registry (services/) must NOT contain the demo fixtures —
+    # it starts empty for the user's real onboarded services.
+    prod = list_available_services()
+    assert "tl-eta" not in prod
+    assert "ocean-eta" not in prod
+    # …but the demo fixtures are still discoverable with include_demo=True.
+    demo = list_available_services(include_demo=True)
+    assert "tl-eta" in demo
+    assert "ocean-eta" in demo
 
 
 def test_loads_tl_eta_config_successfully():

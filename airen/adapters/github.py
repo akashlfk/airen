@@ -175,6 +175,32 @@ def get_pr_for_commit(repo_full_name: str, sha: str) -> dict | None:
     }
 
 
+def merge_pull_request(repo_full_name: str, pr_number: int, method: str = "squash") -> dict:
+    """Merge a PR. method ∈ {squash, merge, rebase}. Outward-facing + irreversible —
+    callers must gate this behind explicit approval + config. Returns merge metadata."""
+    repo = _client().get_repo(repo_full_name)
+    pr = repo.get_pull(pr_number)
+    if pr.merged:
+        return {"merged": True, "sha": pr.merge_commit_sha, "already": True}
+    if not pr.mergeable:
+        # mergeable can be None while GitHub computes it; surface clearly.
+        return {"merged": False, "error": f"PR #{pr_number} is not mergeable (conflicts or checks pending)."}
+    result = pr.merge(merge_method=method)
+    return {
+        "merged": bool(result.merged),
+        "sha": result.sha,
+        "message": result.message,
+    }
+
+
+def is_pr_merged(repo_full_name: str, pr_number: int) -> bool:
+    """True if the PR has been merged (e.g. a human merged it in GitHub)."""
+    try:
+        return bool(_client().get_repo(repo_full_name).get_pull(pr_number).merged)
+    except GithubException:
+        return False
+
+
 def get_blame_for_line(repo_full_name: str, file_path: str, line_number: int) -> dict | None:
     """Find the commit that last touched a specific line. Best-effort.
 

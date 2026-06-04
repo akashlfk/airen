@@ -1,0 +1,16 @@
+[Unit]
+Description=Airen — web dashboard (FastAPI/uvicorn on :8000)
+After=airen-phoenix.service network-online.target
+Wants=airen-phoenix.service
+
+[Service]
+Type=simple
+User=__USER__
+WorkingDirectory=__REPO__
+EnvironmentFile=__REPO__/.env
+ExecStart=__PY__ -m uvicorn airen.web.app:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

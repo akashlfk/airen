@@ -3,11 +3,9 @@
 Canonical entrypoint, driven by the per-service `airen.yaml` config.
 
 Usage:
-    python -m airen.run_orchestrator                    # default: tl-eta, one cycle
-    python -m airen.run_orchestrator tl-eta             # by service name
-    python -m airen.run_orchestrator ocean-eta          # different service
+    python -m airen.run_orchestrator <service>          # by service name (required)
     python -m airen.run_orchestrator path/to/airen.yaml # explicit file
-    python -m airen.run_orchestrator --list             # show available services
+    python -m airen.run_orchestrator --list             # show onboarded services
 
     # Autonomous mode — runs every N seconds until Ctrl+C
     python -m airen.run_orchestrator tl-eta --loop 300   # every 5 minutes
@@ -155,12 +153,25 @@ def main() -> None:
             continue
         positional.append(arg)
 
-    name = positional[0] if positional else "tl-eta"
+    if not positional:
+        print("❌ Specify a service to run, e.g.:  python -m airen.run_orchestrator <service>")
+        print(f"   Onboarded services: {list_available_services() or '(none yet — run python -m airen.run_onboard)'}")
+        sys.exit(1)
+    name = positional[0]
     try:
         config = load_service_config(name)
     except FileNotFoundError as e:
         print(f"❌ {e}")
         sys.exit(1)
+
+    # Readiness check: warn (don't block) about any enabled source whose
+    # secret/connection detail is missing. Mode-aware — mock runs stay quiet.
+    try:
+        from airen.onboarding.preflight import print_runtime_warnings
+
+        print_runtime_warnings(config)
+    except Exception:
+        pass
 
     if loop_sec is not None:
         asyncio.run(loop_main(config, execute=execute, interval_sec=loop_sec))

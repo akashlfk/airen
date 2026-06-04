@@ -17,11 +17,19 @@ from typing import Optional
 from airen.adapters.redshift_base import RedshiftAdapter
 
 
-def get_redshift_adapter(mode: Optional[str] = None) -> RedshiftAdapter:
+def get_redshift_adapter(mode: Optional[str] = None, *, config=None) -> RedshiftAdapter:
+    """`config` is an optional RedshiftConfig — its non-secret fields (host,
+    port, database, user, sslmode) are passed to the real adapter, which falls
+    back to env vars for any left null. The password is always env-only."""
     resolved = (mode or os.environ.get("AIREN_REDSHIFT_MODE", "mock")).strip().lower()
     if resolved == "real":
         from airen.adapters.redshift_real import RealRedshiftAdapter
 
+        if config is not None:
+            return RealRedshiftAdapter(
+                host=config.host, port=config.port, database=config.database,
+                user=config.user, sslmode=config.sslmode,
+            )
         return RealRedshiftAdapter()
     if resolved == "mock":
         from airen.adapters.redshift_mock import MockRedshiftAdapter

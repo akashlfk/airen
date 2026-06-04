@@ -36,12 +36,16 @@ PROCESS:
 
 4. Build the `anomalies` list — Sentinel watches TWO signal types:
 
-   A) MAE drift (per-segment performance regression):
-   - For every segment in by_shipper and by_api_fetch_limit whose
-     ratio_vs_baseline >= 1.2, add one Anomaly with:
-       metric         = "mae"
-       segment        = e.g. "shipper=Fritolay" or "api_fetch_limit=73"
-       current_value  = the mae_minutes for that segment
+   A) Metric drift (per-segment performance regression):
+   - `by_segment` maps each segment attribute (whatever THIS service configured,
+     e.g. "input.shipper", "input.vessel_class", "input.region") to {value →
+     stats}. For every (attribute, value) whose ratio_vs_baseline >= 1.2, add
+     one Anomaly with:
+       metric         = "mae"   (the headline metric, in the service's unit)
+       segment        = "<bare_attr>=<value>", e.g. "shipper=Fritolay",
+                        "vessel_class=tanker", "region=APAC" — use the real
+                        attribute name (strip the "input." prefix).
+       current_value  = that segment's metric_value
        baseline_value = snapshot.baseline_mae_minutes
        ratio          = ratio_vs_baseline
        description    = one short sentence
@@ -63,7 +67,31 @@ PROCESS:
        metric="prediction_volume", segment="overall", current_value=0,
        baseline_value=1, ratio=0, description= the decision.reason.
 
-   D) Governance risk (training-code provenance gap):
+   D2) Reliability battery (Airen's always-on, model-agnostic safety net):
+   - For every entry in `reliability_signals` whose status is "WARNING" or
+     "CRITICAL", add one Anomaly with:
+       metric         = the signal's `check` (e.g. "volume_drop", "input_drift_auto",
+                        "latency_drift", "error_rate", "silence", "schema_drift")
+       segment        = "overall" (or the attribute named in the detail)
+       current_value  = signal.current_value
+       baseline_value = 0
+       ratio          = signal.severity
+       description    = signal.detail
+     These catch production issues the user never wrote a metric for. They can
+     escalate the status on their own (the tool already folded them into
+     `decision`), so always surface them when present.
+
+   D3) Custom metrics (user-declared, domain-specific):
+   - For every entry in `custom_metrics` whose status is "WARNING" or "CRITICAL",
+     add one Anomaly with:
+       metric         = the entry's `name`
+       segment        = "overall"
+       current_value  = entry.current_value
+       baseline_value = entry.baseline_value
+       ratio          = entry.ratio
+       description    = entry.detail
+
+   E) Governance risk (training-code provenance gap):
    - For every entry in governance_warnings, add one Anomaly with:
        metric         = "governance"
        segment        = entry.model_family

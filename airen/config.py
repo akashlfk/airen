@@ -24,7 +24,13 @@ import yaml
 from pydantic import BaseModel, Field
 
 # Default location: <repo-root>/services/<name>/airen.yaml
+# Production registry — where the user's REAL onboarded services live. Starts
+# empty; `python -m airen.run_onboard` writes here.
 SERVICES_DIR = Path(__file__).resolve().parent.parent / "services"
+# Demo fixtures (tl-eta, ocean-eta) live OUT of the production path so they don't
+# pollute the registry. Resolvable by name as a fallback (for mock-mode demo +
+# tests), but NOT listed by `--list`.
+DEMO_SERVICES_DIR = Path(__file__).resolve().parent.parent / "demo" / "services"
 
 
 # ───────────────────────────────────────────────────────────────────────
@@ -36,6 +42,13 @@ class ServiceInfo(BaseModel):
     name: str = Field(description="Short identifier, e.g. 'tl-eta'")
     description: str | None = None
     owner_team: str | None = Field(default=None, description="Slack handle / team name")
+    context: str | None = Field(
+        default=None,
+        description="Free-text operator context fed to the Investigator + RCA agents — "
+                    "things NOT in the repo: upstream deps, known issues, retrain/approval "
+                    "policy, seasonality, who to page. Markdown ok. This is how you give "
+                    "the LLM out-of-band knowledge about the service.",
+    )
 
 
 class PhoenixConfig(BaseModel):
@@ -74,6 +87,11 @@ class JiraConfig(BaseModel):
     where it is). The defaults match a vanilla Jira "Software" workflow.
     """
 
+    # Atlassian instance topology — plain config → yaml. The API token is the
+    # only secret and lives in .env as AIREN_JIRA_API_TOKEN. Adapters fall back
+    # to AIREN_JIRA_BASE_URL / AIREN_JIRA_USER_EMAIL env when these are null.
+    base_url: str | None = None         # e.g. https://fourkites.atlassian.net
+    user_email: str | None = None       # API user's email (not a secret)
     project_key: str | None = None
     enable: bool = False  # off until Atlassian MCP wired
 
@@ -105,19 +123,33 @@ class JiraConfig(BaseModel):
 
 
 class RedshiftConfig(BaseModel):
-    """Where historical predictions / actuals live for batch analysis (FK VM required)."""
+    """Historical predictions / actuals for batch analysis (FK VM required).
 
+    Connection topology lives here in yaml; ONLY the password is a secret and
+    lives in .env as REDSHIFT_PASSWORD. Adapters fall back to the matching
+    env vars (REDSHIFT_HOST etc.) when a field is left null, for compatibility.
+    """
+
+    host: str | None = None
+    port: int = 5439
+    database: str | None = None
+    user: str | None = None          # a username, not a secret → yaml
+    sslmode: str = "require"
     table: str | None = None
     actuals_table: str | None = None
-    conn_env_var: str = "REDSHIFT_DSN"
     enable: bool = False
+    # Secret (NOT here): REDSHIFT_PASSWORD lives in .env.
 
 
 class MLflowConfig(BaseModel):
-    """Model registry / training run lineage."""
+    """Model registry / training run lineage.
 
+    tracking_uri + experiment are plain config → yaml. FK's MLflow is no-auth;
+    set MLFLOW_TOKEN in .env only if your tracking server requires it.
+    """
+
+    tracking_uri: str | None = None
     experiment_name: str | None = None
-    tracking_uri_env_var: str = "MLFLOW_TRACKING_URI"
     enable: bool = False
 
 
@@ -152,25 +184,189 @@ class S3Config(BaseModel):
     """Where training-time baselines live.
 
     Layout assumed: s3://<bucket>/baselines/<service>/<version>.json
-    The training pipeline writes one JSON per model version with MAE +
-    attribute distributions. Sentinel prefers these over hand-tuned yaml
-    values when present, falling back gracefully when the object is missing
-    or AWS creds aren't configured.
+    bucket + region are plain config → yaml. AWS credentials are secrets and
+    live in .env (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY). Sentinel prefers
+    these baselines over hand-tuned yaml values, degrading gracefully when the
+    object is missing or creds aren't configured.
     """
 
-    bucket_env_var: str = "S3_BASELINES_BUCKET"
+    bucket: str | None = None
+    region: str = "us-east-1"
     # Specific version to pin to; None = always fetch latest.json
     model_version: str | None = None
     enable: bool = False
+    # Secrets (NOT here): AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY live in .env.
 
 
 class KafkaConfig(BaseModel):
-    """Peek-only Kafka access for live validation (FK VM required)."""
+    """Peek-only Kafka access for live validation (FK VM required).
 
-    bootstrap_env_var: str = "KAFKA_BOOTSTRAP_SERVERS"
-    input_topic_env_var: str = "KAFKA_INPUT_TOPIC"
-    output_topic_env_var: str = "KAFKA_OUTPUT_TOPIC"
+    Connection topology (brokers, topics, group, protocol) is plain config →
+    yaml. ONLY the SASL credentials are secrets and live in .env as
+    KAFKA_SASL_USERNAME / KAFKA_SASL_PASSWORD.
+    """
+
+    bootstrap_servers: str | None = None
+    input_topic: str | None = None
+    output_topic: str | None = None
+    group_id: str | None = None
+    security_protocol: str | None = None
+    sasl_mechanism: str | None = None
     enable: bool = False
+    # Secrets (NOT here): KAFKA_SASL_USERNAME / KAFKA_SASL_PASSWORD live in .env.
+
+
+class ServingConfig(BaseModel):
+    """How the inference layer serves predictions — which determines *where*
+    Airen should observe them.
+
+    `mode` is descriptive; `prediction_source` is the one Sentinel acts on: it
+    names the live feed Airen reads to judge health. The connection details for
+    each source already live in their own blocks (phoenix / kafka / redshift),
+    so this block only *selects* and annotates.
+
+    NOTE: Sentinel currently always reads Phoenix. `prediction_source` is wired
+    so the topology-aware PredictionSource dispatcher can honor it later; for
+    now it documents intent and drives the onboarding preflight.
+    """
+
+    mode: str = Field(
+        default="sync-api",
+        description="sync-api | async-kafka | batch | unknown — the inference I/O channel",
+    )
+    prediction_source: str = Field(
+        default="phoenix",
+        description="phoenix | kafka | redshift — where the live prediction feed is read from",
+    )
+    endpoints: list[str] = Field(
+        default_factory=list, description="Detected serving endpoints, e.g. 'POST /predict' (sync-api)"
+    )
+    input_topic: str | None = Field(default=None, description="Kafka topic the model consumes (async-kafka)")
+    output_topic: str | None = Field(default=None, description="Kafka topic predictions land on (async-kafka)")
+    scheduler: str | None = Field(default=None, description="Batch orchestrator: airflow | prefect | dagster | cron | …")
+
+
+class TapFieldMap(BaseModel):
+    """Maps YOUR Kafka message field names → the span roles Airen expects, so a
+    new topic is onboarded by editing yaml, not kafka_tap.py. All optional; the
+    tap falls back to its ETA defaults when this block is absent.
+
+    Targets written: prediction→mlre.prediction.value, actual→mlre.ground_truth.value,
+    error→mlre.eval.error (computed |prediction-actual| if `error` is null),
+    model_version→mlre.model.version, timestamp→mlre.timestamp,
+    each inputs[f]→mlre.input.<f> (so observation.segments = input.<f>).
+    """
+
+    prediction: str | None = None
+    actual: str | None = None
+    error: str | None = None          # null → compute |prediction - actual| when both present
+    model_version: str | None = None
+    timestamp: str | None = None
+    inputs: list[str] = Field(default_factory=list, description="message fields → mlre.input.<name>; [] = copy all scalar fields")
+
+
+class TapConfig(BaseModel):
+    """How the Kafka→Phoenix tap turns this service's messages into spans."""
+
+    field_map: TapFieldMap = Field(default_factory=TapFieldMap)
+
+
+class RemediationConfig(BaseModel):
+    """How far Airen goes on the fix → merge → deploy → validate loop.
+
+    Merging code is irreversible and outward-facing, so `auto_merge` defaults
+    OFF: out of the box Airen prepares a ready PR and asks a human to merge.
+    Turn it on per-service to let Airen merge after Slack approval.
+    """
+
+    auto_merge: bool = False                  # merge the PR on approval? (3-gated: --execute + approval + this)
+    merge_method: str = "squash"              # squash | merge | rebase
+    deploy_grace_minutes: int = 5             # wait after merge for CI/CD before validating
+    validation_poll_interval_sec: int = 120   # how often to re-check the live feed
+    validation_max_attempts: int = 10         # cap on validation polls (timeout)
+    recovery_window_polls: int = 2            # consecutive healthy polls required to call PASS
+    max_reinvestigate_attempts: int = 2       # times to loop back to Investigator on FAIL
+
+
+class MetricSpec(BaseModel):
+    """A user-declared custom metric Sentinel should compute and watch.
+
+    Augments Airen's default battery with domain knowledge. Each is computed
+    over the window from one span/row attribute; a ratio vs baseline >1 always
+    means 'worse' (the direction handles error- vs score-type metrics).
+    """
+
+    name: str
+    attribute: str = Field(description="span/row attribute to aggregate, e.g. eval.latency_ms")
+    agg: str = Field(default="mean", description="mean | p50 | p95 | p99 | sum | count | rate | null_rate")
+    direction: str = Field(default="lower_is_better", description="lower_is_better | higher_is_better")
+    baseline: float | None = Field(default=None, description="Explicit baseline; if null, the earlier half of the window is used")
+    warn_ratio: float = 1.5
+    critical_ratio: float = 2.0
+    segment_by: str | None = Field(default=None, description="Optional attribute to break the metric down by")
+
+
+class ReliabilityConfig(BaseModel):
+    """Airen's always-on, model-agnostic reliability battery — the safety net
+    UNDER the user's custom metrics. These checks run on every service with no
+    config, comparing the recent half of the window to the earlier half (so they
+    need no pre-computed baseline). The user can't define these away, only
+    opt-out individual checks that are noisy for their app.
+
+    Available check names: volume_drop, silence, error_rate, latency_drift,
+    null_rate, input_drift_auto, output_drift, schema_drift.
+    """
+
+    enable: bool = True
+    disabled_checks: list[str] = Field(
+        default_factory=list,
+        description="Names of default checks to turn off for this service (opt-out).",
+    )
+    # tunables (sensible defaults; override per-service if noisy)
+    volume_drop_warn: float = 0.4        # recent rate < 60% of earlier → warn
+    volume_drop_critical: float = 0.7    # < 30% of earlier → critical
+    silence_warn_frac: float = 0.5       # no spans in the last 50% of the window
+    null_rate_warn: float = 0.2
+    error_rate_warn: float = 0.05
+    error_rate_critical: float = 0.2
+    latency_warn_ratio: float = 1.5      # recent p95 latency vs earlier
+    latency_critical_ratio: float = 2.0
+    drift_psi_warn: float = 0.10
+    drift_psi_critical: float = 0.25
+
+
+class ObservationConfig(BaseModel):
+    """Describes the Phoenix span schema Sentinel reads — which attribute holds
+    the per-prediction error/score, which attributes to segment on, and what
+    KIND of metric it is. This is what lets Airen monitor ANY app's
+    instrumentation.
+
+    Defaults are generic; onboarding (graphify + the live probe) fills these in
+    per service, so a real config never relies on these placeholders.
+    """
+
+    problem_type: str = Field(
+        default="regression",
+        description="regression | classification | ranking — informs narrative + metric handling",
+    )
+    error_attribute: str = Field(
+        default="eval.error",
+        description="Span attribute Sentinel averages into the headline metric "
+                    "(e.g. eval.error, eval.abs_pct_error, eval.is_correct)",
+    )
+    metric_unit: str = Field(
+        default="", description="Unit label for narratives — minutes, %, hours, …"
+    )
+    metric_direction: str = Field(
+        default="lower_is_better",
+        description="lower_is_better (errors) | higher_is_better (accuracy/F1). "
+                    "Drives how the ratio-vs-baseline is computed.",
+    )
+    segments: list[str] = Field(
+        default_factory=list,
+        description="Span attributes to group by for per-segment health breakdowns "
+                    "(set per service by onboarding; e.g. input.region)",
+    )
 
 
 class SentinelThresholds(BaseModel):
@@ -203,6 +399,15 @@ class AirenServiceConfig(BaseModel):
 
     service: ServiceInfo
     phoenix: PhoenixConfig
+    serving: ServingConfig = Field(default_factory=ServingConfig)
+    observation: ObservationConfig = Field(default_factory=ObservationConfig)
+    reliability: ReliabilityConfig = Field(default_factory=ReliabilityConfig)
+    remediation: RemediationConfig = Field(default_factory=RemediationConfig)
+    tap: TapConfig = Field(default_factory=TapConfig)
+    metrics: list[MetricSpec] = Field(
+        default_factory=list,
+        description="User-declared custom metrics Sentinel computes + watches (augments the default battery).",
+    )
     github: GithubConfig | None = None
     slack: SlackConfig = Field(default_factory=SlackConfig)
     jira: JiraConfig = Field(default_factory=JiraConfig)
@@ -229,7 +434,8 @@ def load_service_config(name_or_path: str | Path) -> AirenServiceConfig:
     Resolution order:
       1. If the arg is an existing file, parse it directly.
       2. If it's an existing directory containing airen.yaml, use that.
-      3. Otherwise try services/<arg>/airen.yaml relative to the repo root.
+      3. Otherwise try services/<arg>/airen.yaml (production registry),
+         then demo/services/<arg>/airen.yaml (demo fixtures fallback).
 
     Raises FileNotFoundError if nothing resolves.
     """
@@ -241,6 +447,7 @@ def load_service_config(name_or_path: str | Path) -> AirenServiceConfig:
         candidates.append(p / "airen.yaml")
     else:
         candidates.append(SERVICES_DIR / str(name_or_path) / "airen.yaml")
+        candidates.append(DEMO_SERVICES_DIR / str(name_or_path) / "airen.yaml")
 
     for c in candidates:
         if c.is_file():
@@ -255,21 +462,25 @@ def load_service_config(name_or_path: str | Path) -> AirenServiceConfig:
     )
 
 
-def list_available_services() -> list[str]:
-    """Discover services by scanning services/<name>/airen.yaml."""
-    if not SERVICES_DIR.exists():
-        return []
-    return sorted(
-        d.name
-        for d in SERVICES_DIR.iterdir()
-        if d.is_dir() and (d / "airen.yaml").is_file()
-    )
+def list_available_services(include_demo: bool = False) -> list[str]:
+    """Discover services. Production registry (services/) only by default; pass
+    include_demo=True to also include the demo fixtures (used internally for
+    project-name resolution, NOT shown to the user by `--list`)."""
+    dirs = [SERVICES_DIR] + ([DEMO_SERVICES_DIR] if include_demo else [])
+    names: set[str] = set()
+    for base in dirs:
+        if base.exists():
+            names.update(
+                d.name for d in base.iterdir()
+                if d.is_dir() and (d / "airen.yaml").is_file()
+            )
+    return sorted(names)
 
 
-def load_all_services() -> dict[str, AirenServiceConfig]:
-    """Load every services/<name>/airen.yaml. Bad configs are skipped with a warning."""
+def load_all_services(include_demo: bool = False) -> dict[str, AirenServiceConfig]:
+    """Load every discoverable service config. Bad configs are skipped with a warning."""
     out: dict[str, AirenServiceConfig] = {}
-    for name in list_available_services():
+    for name in list_available_services(include_demo=include_demo):
         try:
             out[name] = load_service_config(name)
         except Exception as e:  # noqa: BLE001

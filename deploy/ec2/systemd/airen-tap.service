@@ -1,0 +1,18 @@
+[Unit]
+Description=Airen — Kafka→Phoenix tap (re-peeks latest N on a loop)
+After=airen-phoenix.service network-online.target
+Wants=airen-phoenix.service
+
+[Service]
+Type=simple
+User=__USER__
+WorkingDirectory=__REPO__
+EnvironmentFile=__REPO__/.env
+# Peek the latest 10k messages every 5 min and emit them as Phoenix spans.
+# Tune --max / --loop to taste. AIREN_KAFKA_MODE=real comes from .env.
+ExecStart=__PY__ -m airen.run_kafka_tap --mode real --max 10000 --loop 300
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

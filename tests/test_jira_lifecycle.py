@@ -64,7 +64,7 @@ def test_resolved_pass_runs_close_transition(monkeypatch):
     )
 
     fake = MockJiraAdapter()
-    monkeypatch.setattr("airen.adapters.jira.get_jira_adapter", lambda: fake)
+    monkeypatch.setattr("airen.adapters.jira.get_jira_adapter", lambda *a, **k: fake)
 
     asyncio.run(orch._jira_on_resolved())
     assert fake.transitions == [{"issue": "TEST-42", "transition": "Done"}]
@@ -80,7 +80,7 @@ def test_resolved_fail_skips_when_no_fail_transition(monkeypatch):
     )
 
     fake = MockJiraAdapter()
-    monkeypatch.setattr("airen.adapters.jira.get_jira_adapter", lambda: fake)
+    monkeypatch.setattr("airen.adapters.jira.get_jira_adapter", lambda *a, **k: fake)
 
     asyncio.run(orch._jira_on_resolved())
     assert fake.transitions == []
@@ -96,7 +96,7 @@ def test_resolved_inconclusive_uses_fail_transition_when_set(monkeypatch):
     )
 
     fake = MockJiraAdapter()
-    monkeypatch.setattr("airen.adapters.jira.get_jira_adapter", lambda: fake)
+    monkeypatch.setattr("airen.adapters.jira.get_jira_adapter", lambda *a, **k: fake)
 
     asyncio.run(orch._jira_on_resolved())
     assert fake.transitions == [{"issue": "TEST-42", "transition": "Needs Review"}]
@@ -108,7 +108,7 @@ def test_lifecycle_noop_when_jira_disabled(monkeypatch):
     orch = _make_orchestrator(cfg)
 
     fake = MockJiraAdapter()
-    monkeypatch.setattr("airen.adapters.jira.get_jira_adapter", lambda: fake)
+    monkeypatch.setattr("airen.adapters.jira.get_jira_adapter", lambda *a, **k: fake)
 
     asyncio.run(orch._jira_on_alert_sent("https://slack/perma"))
     asyncio.run(orch._jira_on_validation(1, ValidatorVerdict(
@@ -125,7 +125,7 @@ def test_lifecycle_noop_when_no_ticket(monkeypatch):
     orch = _make_orchestrator(cfg, jira_key=None)
 
     fake = MockJiraAdapter()
-    monkeypatch.setattr("airen.adapters.jira.get_jira_adapter", lambda: fake)
+    monkeypatch.setattr("airen.adapters.jira.get_jira_adapter", lambda *a, **k: fake)
 
     asyncio.run(orch._jira_on_alert_sent("https://slack/perma"))
     assert fake.comments == []
@@ -138,7 +138,7 @@ def test_alert_sent_writes_comment_and_transitions(monkeypatch):
     orch = _make_orchestrator(cfg)
 
     fake = MockJiraAdapter()
-    monkeypatch.setattr("airen.adapters.jira.get_jira_adapter", lambda: fake)
+    monkeypatch.setattr("airen.adapters.jira.get_jira_adapter", lambda *a, **k: fake)
 
     asyncio.run(orch._jira_on_alert_sent("https://slack/perma/abc"))
     assert len(fake.comments) == 1

@@ -21,7 +21,15 @@ from typing import Any
 class RealRedshiftAdapter:
     """Live Redshift connection via psycopg2. Only used on the FK VM (laptop VPN can't route)."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        host: str | None = None,
+        port: int | None = None,
+        database: str | None = None,
+        user: str | None = None,
+        sslmode: str | None = None,
+    ) -> None:
         try:
             import psycopg2  # noqa: F401
             from psycopg2.extras import RealDictCursor  # noqa: F401
@@ -31,6 +39,14 @@ class RealRedshiftAdapter:
                 "    conda run -n mlre pip install 'psycopg2-binary>=2.9'"
             ) from e
 
+        # Connection topology comes from airen.yaml (passed here); each field
+        # falls back to its env var when None. The PASSWORD is never passed —
+        # it always comes from REDSHIFT_PASSWORD in .env.
+        self._host = host
+        self._port = port
+        self._database = database
+        self._user = user
+        self._sslmode = sslmode
         self._conn = None  # lazy
         self._closed = False
 
@@ -47,21 +63,28 @@ class RealRedshiftAdapter:
             self._conn = psycopg2.connect(dsn, cursor_factory=RealDictCursor)
             return self._conn
 
-        # Build from split fields
-        required = ("REDSHIFT_HOST", "REDSHIFT_DATABASE", "REDSHIFT_USER", "REDSHIFT_PASSWORD")
-        missing = [k for k in required if not os.environ.get(k, "").strip()]
+        # Build from split fields — prefer yaml-supplied values, fall back to env.
+        host = self._host or os.environ.get("REDSHIFT_HOST", "").strip()
+        database = self._database or os.environ.get("REDSHIFT_DATABASE", "").strip()
+        user = self._user or os.environ.get("REDSHIFT_USER", "").strip()
+        password = os.environ.get("REDSHIFT_PASSWORD", "")  # secret — env only
+        missing = [
+            name for name, val in
+            (("host", host), ("database", database), ("user", user), ("REDSHIFT_PASSWORD", password))
+            if not str(val).strip()
+        ]
         if missing:
             raise RuntimeError(
-                f"Redshift config missing. Set REDSHIFT_DSN, OR all of: {', '.join(missing)}. "
-                f"See .env.example for the template."
+                f"Redshift config missing: {', '.join(missing)}. Set redshift.{{host,database,user}} "
+                f"in airen.yaml and REDSHIFT_PASSWORD in .env (or use REDSHIFT_DSN)."
             )
         self._conn = psycopg2.connect(
-            host=os.environ["REDSHIFT_HOST"].strip(),
-            port=int(os.environ.get("REDSHIFT_PORT", "5439")),
-            dbname=os.environ["REDSHIFT_DATABASE"].strip(),
-            user=os.environ["REDSHIFT_USER"].strip(),
-            password=os.environ["REDSHIFT_PASSWORD"],
-            sslmode=os.environ.get("REDSHIFT_SSLMODE", "require"),
+            host=host,
+            port=int(self._port or os.environ.get("REDSHIFT_PORT", "5439")),
+            dbname=database,
+            user=user,
+            password=password,
+            sslmode=self._sslmode or os.environ.get("REDSHIFT_SSLMODE", "require"),
             connect_timeout=10,
             cursor_factory=RealDictCursor,
         )

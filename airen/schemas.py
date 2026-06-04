@@ -190,9 +190,14 @@ class OrchestratorState(str, Enum):
     INVESTIGATING = "INVESTIGATING"
     RCA_DRAFTING = "RCA_DRAFTING"
     NOTIFYING = "NOTIFYING"
-    AWAITING_APPROVAL = "AWAITING_APPROVAL"  # for future Remediation gate
-    REMEDIATING = "REMEDIATING"  # future
-    VALIDATING = "VALIDATING"  # future
+    REMEDIATION_PREP = "REMEDIATION_PREP"    # build branch + apply fix + open PR (ready)
+    AWAITING_APPROVAL = "AWAITING_APPROVAL"  # block on Slack approve/reject
+    MERGING = "MERGING"                      # merge the approved PR (gated)
+    DEPLOYING = "DEPLOYING"                  # wait for CI/CD to ship the merge
+    REMEDIATING = "REMEDIATING"
+    VALIDATING = "VALIDATING"                # poll live feed until recovered / timeout
+    REOPENED = "REOPENED"                    # fix didn't work → loop back to investigate
+    AWAITING_HUMAN = "AWAITING_HUMAN"        # Airen stops auto-acting, waits for human
     RESOLVED = "RESOLVED"
     FAILED = "FAILED"
 
@@ -375,6 +380,9 @@ class RemediationResult(BaseModel):
     pr_url: str | None = None
     pr_number: int | None = None
     branch_created: str | None = None
+    merged: bool = False
+    merge_sha: str | None = None
+    merged_at: str | None = None
     error: str | None = None
 
 

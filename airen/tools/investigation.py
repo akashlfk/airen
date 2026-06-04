@@ -33,12 +33,13 @@ def query_anomaly_spans(
 ) -> dict:
     """Pull the actual spans that are part of an anomaly.
 
-    Example: project="tl-eta-prediction", attribute_name="input.api_fetch_limit",
-    attribute_value="73" returns the 37 broken predictions plus stats.
+    The attribute_name/value come from the live anomaly's segment — whatever it
+    was (a feature, a parameter, a customer/entity), never a fixed attribute.
 
     Args:
-        project_name: Phoenix project, e.g. "tl-eta-prediction".
-        attribute_name: e.g. "input.api_fetch_limit" or "input.shipper".
+        project_name: the service's Phoenix project.
+        attribute_name: the anomalous span attribute, e.g. "input.<feature>"
+                        or "input.<entity>" (whatever the anomaly named).
         attribute_value: the segment value to filter to, as a string.
         lookback_minutes: time window.
         max_rows: hard cap on spans returned.
@@ -109,12 +110,14 @@ def find_commits_introducing_pattern(
       2. For each matching file, list recent commits that modified it.
       3. Rank commits by recency; return as suspect list.
 
-    This is how Investigator turns "the anomaly involves api_fetch_limit=73"
-    into "commit d9de2cc6 introduced api_fetch_limit=73 on Feb 19".
+    This is how Investigator turns "the anomaly involves <attribute>=<value>"
+    into "commit <sha> introduced <attribute>=<value> on <date>". The pattern is
+    whatever attribute the live anomaly named — never a fixed feature.
 
     Args:
-        repo_full_name: e.g. "cloudqwest/dynamic_eta_prediction".
-        pattern: literal string, e.g. "api_fetch_limit".
+        repo_full_name: owner/repo of the service under investigation.
+        pattern: the literal symbol from the anomaly, e.g. a feature/param name
+                 like "vessel_class", "embedding_dim", "seq_len", "api_fetch_limit".
         days_back: how far back to look for commits.
         max_commits: cap on returned suspects.
     """
@@ -364,10 +367,10 @@ def _strip_local_prefix_to_repo_path(source_path: str, expected_repo: str) -> st
 def get_training_run_params(experiment_name: str) -> dict:
     """Fetch the latest training run for an MLflow experiment.
 
-    Use this to compare training-time settings (e.g., was `api_fetch_limit`
-    set during training?) against production span attributes. A mismatch
-    between training params and production span attrs is a STRONG signal
-    that a config drift or code change introduced the regression.
+    Use this to compare training-time settings (was the anomalous attribute
+    set during training, and to what value?) against production span attributes.
+    A mismatch between training params and production span attrs is a STRONG
+    signal that a config drift or code change introduced the regression.
 
     Args:
         experiment_name: MLflow experiment name (e.g., "tl-eta-prod") OR experiment_id ("42").
@@ -390,17 +393,16 @@ def detect_training_inference_mismatch(
 ) -> dict:
     """Check whether a production span attribute value matches training-time settings.
 
-    This is the smoking-gun cross-reference. Example use:
-      anomaly segment "api_fetch_limit=73" → call this with
-      span_attribute="api_fetch_limit", observed_value="73". If the training
-      run has no `api_fetch_limit` param (or has a very different value),
-      you've confirmed a training/inference mismatch — production is using a
-      parameter the model was never trained against.
+    One hypothesis among several (use it when the anomaly is on a feature/param,
+    not for drift/infra causes). Given the anomaly's attribute=value, this checks
+    whether the training run ever used that value. If the training run has no such
+    param (or a very different value), production is running on something the
+    model was never trained against — a confirmed training/inference mismatch.
 
     Args:
         experiment_name: MLflow experiment to compare against.
-        span_attribute: The attribute name from the Phoenix span (e.g. "api_fetch_limit").
-        observed_value: The value flagged by Sentinel (e.g. "73").
+        span_attribute: the anomalous attribute name (whatever the anomaly named).
+        observed_value: the value flagged by Sentinel, as a string.
 
     Returns:
         Dict with:
@@ -474,11 +476,10 @@ def detect_training_inference_mismatch(
 def find_symbol_callers(repo: str, symbol: str, max_results: int = 10) -> dict:
     """Find every call site of `symbol` in the repo (via Graphify).
 
-    Use this AFTER find_commits_introducing_pattern when you need to know
-    the exact line where the offending value is passed. Example: Sentinel
-    flagged `api_fetch_limit=73`. find_commits found commit 6270ca55
-    modified `fetch_historical_checkcalls`. THIS tool tells you which
-    file:line in production code actually passes `limit=73`.
+    Use this AFTER find_commits_introducing_pattern when you need the exact line
+    where the offending value is passed. Given the function a suspect commit
+    modified, THIS tool tells you which file:line in production code actually
+    calls it — turning a suspect commit into a confirmed call site.
 
     Args:
         repo: e.g. "cloudqwest/dynamic_eta_prediction"
@@ -506,16 +507,15 @@ def find_constant_assignment_sites(repo: str, symbol: str, max_results: int = 10
     """Find lines that ASSIGN a value to `symbol` (constant defs and kwargs).
 
     This is the "show me where this gets set to that value" query. Catches
-    BOTH module-level constants (`API_FETCH_LIMIT = 73`) AND kwarg
-    assignments (`fetch_historical_checkcalls(entry, limit=73)`).
+    BOTH module-level constants (`SOME_PARAM = <value>`) AND kwarg assignments
+    (`some_fn(entry, some_param=<value>)`).
 
-    Powers the smoking-gun moment: Sentinel sees `api_fetch_limit=73` in
-    production, this tool says "yes, it's set to 73 at predict/main.py:12
-    AND passed at predict/main.py:89."
+    Localizes the code line behind whatever attribute the anomaly named — pins a
+    suspect commit to an exact assignment site.
 
     Args:
-        repo: e.g. "cloudqwest/dynamic_eta_prediction"
-        symbol: the attribute/constant name (case-insensitive, e.g. "api_fetch_limit")
+        repo: owner/repo of the service under investigation
+        symbol: the attribute/constant name from the anomaly (case-insensitive)
         max_results: cap
 
     Returns:

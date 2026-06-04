@@ -14,6 +14,26 @@ phoenix:
   project_name: ocean-eta-prediction
   collector_endpoint: http://localhost:6006
 
+# Ocean ETA is a STREAMING inference layer — it consumes route events from one
+# Kafka topic and produces transit-time predictions to another (no sync API).
+# This demonstrates topology-aware onboarding: a different serving mode than TL.
+serving:
+  mode: async-kafka
+  prediction_source: kafka     # predictions land on the output topic, not Phoenix
+  input_topic: ocean_route_events
+  output_topic: ocean_eta_predictions
+
+# Different span schema from TL-ETA — proves the observation block generalizes.
+# Transit error is still in minutes, but segmented on vessel_class / port_pair.
+observation:
+  problem_type: regression
+  error_attribute: eval.absolute_error_minutes
+  metric_unit: minutes
+  metric_direction: lower_is_better
+  segments:
+    - input.vessel_class
+    - input.port_pair
+
 github:
   # Hypothetical repo for the demo — point at the real one when onboarding for real.
   repo: cloudqwest/ocean_eta_prediction
@@ -52,23 +72,30 @@ sentinel:
 
 # FK-only sections — disabled by default, flip on when running on FK VM
 redshift:
+  host: null            # topology in yaml; REDSHIFT_PASSWORD stays in .env
+  database: null
+  user: null
   table: ocean_eta_predictions
   actuals_table: ocean_eta_datamart
-  conn_env_var: REDSHIFT_DSN
   enable: false
 
 s3:
-  bucket_env_var: S3_BASELINES_BUCKET
+  bucket: null          # falls back to S3_BASELINES_BUCKET env; AWS creds in .env
+  region: us-east-1
   model_version: null   # always pull latest training baseline
   enable: true
 
 mlflow:
+  tracking_uri: https://mlflow-dev.fourkites.com
   experiment_name: ocean-eta-prod
-  tracking_uri_env_var: MLFLOW_TRACKING_URI
   enable: false
 
 kafka:
-  bootstrap_env_var: KAFKA_BOOTSTRAP_SERVERS
-  input_topic_env_var: KAFKA_OCEAN_INPUT_TOPIC
-  output_topic_env_var: KAFKA_OCEAN_OUTPUT_TOPIC
+  # The live prediction feed for this streaming service. SASL creds in .env.
+  bootstrap_servers: null
+  input_topic: ocean_route_events
+  output_topic: ocean_eta_predictions
+  group_id: airen-ocean-eta
+  security_protocol: SASL_SSL
+  sasl_mechanism: PLAIN
   enable: false

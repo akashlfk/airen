@@ -139,3 +139,10 @@ websockets==15.0.1
 wrapt==2.2.1
 zipp==4.1.0
 
+# ── direct deps the code imports (were missing from the original freeze) ──
+PyGithub==2.9.1            # github adapter (imported at load — needed even in mock)
+confluent-kafka==2.14.0    # real Kafka peek/tap
+psycopg2-binary==2.9.12    # real Redshift
+mlflow-skinny==3.12.0      # real MLflow lineage
+slack_sdk==3.42.0          # Slack posting
+

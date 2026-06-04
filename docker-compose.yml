@@ -1,0 +1,94 @@
+# Airen — full internal/real-data stack for a single Linux box (e.g. an FK EC2
+# instance that can reach Kafka). Brings up everything Airen needs:
+#
+#   phoenix         observability backend (UI :6006, OTLP :4317), Postgres-backed
+#   db              Postgres for Phoenix persistence (no span cap, survives restarts)
+#   airen-web       the dashboard (http://<host>:8000)
+#   airen-tap       Kafka → Phoenix bridge, re-peeks the latest N every TAP_LOOP sec
+#   airen-orch      the monitoring pipeline, one cycle every ORCH_LOOP sec
+#
+# Usage on the box:
+#   1. install Docker + the compose plugin
+#   2. copy .env (real Kafka creds, GOOGLE_API_KEY, etc.) next to this file
+#   3. set AIREN_SERVICE to your onboarded service name
+#   4. docker compose up -d --build
+#   5. open http://<host>:8000  (and Phoenix at :6006)
+#
+# NOTE: this is the FK-REAL / internal track. The hackathon SUBMISSION stays
+# AWS-free (GCP/local + mock/clean adapters) — do not submit this AWS deployment.
+
+x-airen-base: &airen-base
+  build: .
+  image: airen:local
+  env_file: .env
+  environment:
+    # Point every Airen process at the in-network Phoenix (overrides .env).
+    PHOENIX_COLLECTOR_ENDPOINT: http://phoenix:6006
+  depends_on:
+    phoenix:
+      condition: service_started
+  restart: unless-stopped
+
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: phoenix
+      POSTGRES_PASSWORD: ${PHOENIX_PG_PASSWORD:-phoenix}
+      POSTGRES_DB: phoenix
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U phoenix"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  phoenix:
+    image: arizephoenix/phoenix:latest
+    ports:
+      - "6006:6006"   # UI + HTTP collector
+      - "4317:4317"   # OTLP gRPC collector
+    environment:
+      # Postgres-backed persistence → no 25k span cap, survives restarts.
+      PHOENIX_SQL_DATABASE_URL: postgresql://phoenix:${PHOENIX_PG_PASSWORD:-phoenix}@db:5432/phoenix
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  airen-web:
+    <<: *airen-base
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./logs:/app/logs
+      - ./services:/app/services
+      - ./baselines:/app/baselines
+    # default CMD (uvicorn web app) from the Dockerfile
+
+  airen-tap:
+    <<: *airen-base
+    environment:
+      PHOENIX_COLLECTOR_ENDPOINT: http://phoenix:6006
+      AIREN_KAFKA_MODE: ${AIREN_KAFKA_MODE:-real}
+    # Re-peek the latest N messages every TAP_LOOP seconds → Phoenix spans.
+    command: >
+      python -m airen.run_kafka_tap --mode ${AIREN_KAFKA_MODE:-real}
+      --max ${TAP_MAX:-10000} --loop ${TAP_LOOP:-300}
+
+  airen-orch:
+    <<: *airen-base
+    volumes:
+      - ./logs:/app/logs
+      - ./services:/app/services
+      - ./baselines:/app/baselines
+    # Run one monitoring cycle every ORCH_LOOP seconds for the onboarded service.
+    # Remediation stays safe: no --execute here, so it prepares PRs but never merges.
+    command: >
+      python -m airen.run_orchestrator ${AIREN_SERVICE:?set AIREN_SERVICE in .env}
+      --loop ${ORCH_LOOP:-600}
+
+volumes:
+  pgdata:

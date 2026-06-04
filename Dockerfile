@@ -70,7 +70,8 @@ COPY --from=builder /root/.local /root/.local
 COPY airen ./airen
 COPY services ./services
 COPY pyproject.toml ./
-COPY .gemini ./.gemini
+# NOTE: do not COPY .gemini — it's gitignored (per-dev CLI config), absent on a
+# fresh clone, and not needed at runtime (the app reads GOOGLE_API_KEY from env).
 
 # Logs directory (writable in the container; ephemeral on Cloud Run)
 RUN mkdir -p /app/logs
