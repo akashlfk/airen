@@ -50,32 +50,33 @@ def _clone_url(repo: str) -> str:
     return f"https://github.com/{repo}.git"
 
 
-def _ensure_repo(repo: str) -> Path:
-    """Clone or update the local cache for `repo`. Returns the local path."""
+def _ensure_repo(repo: str, branch: str | None = None) -> Path:
+    """Clone or update the local cache for `repo`. If `branch` is given, clone /
+    check out exactly that branch. Returns the local path.
+
+    A different branch than the cached one forces a fresh clone (simplest, and
+    keeps shallow history correct)."""
     owner, _, name = repo.partition("/")
-    safe_name = f"{owner}__{name}"
+    safe_name = f"{owner}__{name}" + (f"__{branch.replace('/', '_')}" if branch else "")
     target = CACHE_DIR / safe_name
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     if not target.exists():
-        subprocess.run(
-            ["git", "clone", "--depth", "50", _clone_url(repo), str(target)],
-            check=True,
-            capture_output=True,
-            timeout=120,
-        )
+        cmd = ["git", "clone", "--depth", "50"]
+        if branch:
+            cmd += ["--branch", branch, "--single-branch"]
+        cmd += [_clone_url(repo), str(target)]
+        subprocess.run(cmd, check=True, capture_output=True, timeout=120)
     else:
         try:
+            ref = f"origin/{branch}" if branch else "origin/HEAD"
             subprocess.run(
-                ["git", "-C", str(target), "fetch", "--depth", "50", "origin"],
-                check=True,
-                capture_output=True,
-                timeout=60,
+                ["git", "-C", str(target), "fetch", "--depth", "50", "origin"]
+                + ([branch] if branch else []),
+                check=True, capture_output=True, timeout=60,
             )
             subprocess.run(
-                ["git", "-C", str(target), "reset", "--hard", "origin/HEAD"],
-                check=True,
-                capture_output=True,
-                timeout=30,
+                ["git", "-C", str(target), "reset", "--hard", ref],
+                check=True, capture_output=True, timeout=30,
             )
         except subprocess.CalledProcessError:
             pass  # cached version still usable

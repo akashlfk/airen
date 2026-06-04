@@ -97,14 +97,16 @@ def onboard_from_repo(
     *,
     service_name: str | None = None,
     is_local: bool = False,
+    branch: str | None = None,
     interactive: bool = True,
     force: bool = False,
     use_llm: bool = True,
 ) -> Path | None:
     """Run the full agentic onboarding. Returns the written path, or None."""
     # 1. graphify
-    print("\n  ⏳ graphifying repo… (clone/refresh + deterministic scan)")
-    manifest = graphify_local(repo_or_path) if is_local else graphify(repo_or_path)
+    bmsg = f" (branch {branch})" if branch else ""
+    print(f"\n  ⏳ graphifying repo{bmsg}… (clone/refresh + deterministic scan)")
+    manifest = graphify_local(repo_or_path) if is_local else graphify(repo_or_path, branch=branch)
 
     # 2. infer
     inferred = infer_service_config(manifest, service_name)

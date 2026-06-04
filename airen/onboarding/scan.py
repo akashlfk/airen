@@ -102,11 +102,12 @@ def graphify_local(path: str | Path, *, save: bool = True) -> RepoManifest:
     return manifest
 
 
-def graphify(repo: str, *, save: bool = True) -> RepoManifest:
-    """Clone/refresh `owner/repo` via the existing Graphify cache, then scan it."""
+def graphify(repo: str, *, branch: str | None = None, save: bool = True) -> RepoManifest:
+    """Clone/refresh `owner/repo` (optionally a specific branch) via the existing
+    Graphify cache, then scan it."""
     from airen.adapters.graphify_real import _ensure_repo
 
-    root = _ensure_repo(repo)  # clones to /tmp/airen-cache, or pulls if present
+    root = _ensure_repo(repo, branch=branch)  # clones to /tmp/airen-cache, or pulls if present
     manifest = _build_manifest(
         root, source=repo, is_remote=True,
         commit_sha=_local_head(root), branch=_local_branch(root),

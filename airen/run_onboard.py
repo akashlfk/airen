@@ -163,6 +163,7 @@ def main() -> None:
     repo = _flag_value(argv, "--repo")
     path = _flag_value(argv, "--path")
     name = _flag_value(argv, "--name")
+    branch = _flag_value(argv, "--branch")
 
     print()
     print("═" * 78)
@@ -181,6 +182,7 @@ def main() -> None:
                 repo or path,            # type: ignore[arg-type]
                 service_name=name,
                 is_local=bool(path),
+                branch=branch,
                 interactive=True,
                 force=force,
             )
