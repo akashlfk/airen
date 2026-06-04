@@ -265,6 +265,13 @@ def _probe_and_apply(cfg: dict) -> None:
     from airen.config import AirenServiceConfig
     from airen.onboarding.probe import infer_field_roles, probe_source, required_connection_info
 
+    # Ensure the config is valid enough to build/probe BEFORE the phoenix gap is
+    # asked: AirenServiceConfig requires phoenix.project_name, so set a
+    # placeholder (the real value is asked later and overrides it). For a kafka
+    # source the probe doesn't use phoenix anyway.
+    svc_name = (cfg.get("service") or {}).get("name", "service")
+    cfg.setdefault("phoenix", {}).setdefault("project_name", f"{svc_name}-prediction")
+
     # The Kafka dispatcher reads kafka.output_topic — mirror serving.output_topic.
     serving = cfg.get("serving") or {}
     if serving.get("prediction_source") == "kafka" and serving.get("output_topic"):
