@@ -15,6 +15,11 @@ from airen.adapters.graphify_base import GraphifyAdapter
 
 def get_graphify_adapter(mode: Optional[str] = None) -> GraphifyAdapter:
     resolved = (mode or os.environ.get("AIREN_GRAPHIFY_MODE", "mock")).strip().lower()
+    if resolved == "graph":
+        # Advanced: a real code knowledge graph (AST-built, optional Neo4j export).
+        from airen.adapters.graphify_graph import GraphGraphifyAdapter
+
+        return GraphGraphifyAdapter()
     if resolved == "real":
         from airen.adapters.graphify_real import RealGraphifyAdapter
 
@@ -23,4 +28,4 @@ def get_graphify_adapter(mode: Optional[str] = None) -> GraphifyAdapter:
         from airen.adapters.graphify_mock import MockGraphifyAdapter
 
         return MockGraphifyAdapter()
-    raise ValueError(f"Unknown AIREN_GRAPHIFY_MODE: {mode!r}. Expected 'mock' or 'real'.")
+    raise ValueError(f"Unknown AIREN_GRAPHIFY_MODE: {mode!r}. Expected 'mock', 'real', or 'graph'.")
