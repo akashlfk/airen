@@ -59,7 +59,13 @@ def _from_kafka(config: AirenServiceConfig, max_rows: int) -> pd.DataFrame:
     if mode == "real":
         from airen.adapters.kafka_real import RealKafkaAdapter
 
-        adapter = RealKafkaAdapter(topic=topic)
+        k = config.kafka
+        adapter = RealKafkaAdapter(
+            topic=topic,
+            bootstrap_servers=k.bootstrap_servers if k else None,
+            security_protocol=k.security_protocol if k else None,
+            sasl_mechanism=k.sasl_mechanism if k else None,
+        )
     else:
         from airen.adapters.kafka_mock import MockKafkaAdapter
 

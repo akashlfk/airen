@@ -288,22 +288,66 @@ def _probe_and_apply(cfg: dict) -> None:
     if wc is None:
         return
 
-    # Prompt for whatever's still needed to REACH the source.
+    import os
+    from pathlib import Path
+
+    src = (cfg.get("serving") or {}).get("prediction_source", "phoenix")
+
+    # 1) Prompt for non-secret connection config → write into the yaml (cfg).
+    #    Collect missing SECRET env vars separately.
+    missing_secrets: list[tuple[str, str]] = []
     for keypath, prompt in required_connection_info(wc):
         if keypath.startswith("env:"):
-            print(f"  ⓘ Need {keypath[4:]} in .env to probe — set it then re-run, or skip.")
-            continue
-        val = io.ask(prompt, None)
-        if val:
-            blk, fld = keypath.split(".", 1)
-            cfg.setdefault(blk, {})[fld] = val
+            missing_secrets.append((keypath[4:], prompt))
+        else:
+            val = io.ask(prompt, None)
+            if val:
+                blk, fld = keypath.split(".", 1)
+                cfg.setdefault(blk, {})[fld] = val
     wc = _working_config() or wc
 
-    print("  ⏳ probing the live source (read-only sample)…")
-    observed = probe_source(wc)
+    # 2) If secrets are missing, PAUSE — don't silently fall back to mock.
+    #    Let the user set them in .env now, reload, and re-check. Or explicitly skip.
+    if missing_secrets:
+        env_path = Path(__file__).resolve().parent.parent.parent / ".env"
+        print("\n  ⚠ To probe the LIVE source, these secrets must be set in .env:")
+        for var, why in missing_secrets:
+            print(f"       {var:<22} — {why}")
+        print(f"     Edit {env_path} (another terminal), add them, then continue.")
+        while True:
+            ans = io.ask("  Press Enter to reload .env & probe, or type 'skip'", None)
+            if ans and ans.strip().lower() == "skip":
+                print("  ↳ Skipped the probe. Set those in .env and re-run onboarding to auto-map,\n"
+                      "    or fill tap.field_map in the yaml by hand.")
+                return
+            from dotenv import load_dotenv
+            load_dotenv(env_path, override=True)
+            still = [v for v, _ in missing_secrets if not os.environ.get(v, "").strip()]
+            if not still:
+                print("  ✓ secrets loaded.")
+                break
+            print(f"  ✗ still missing: {', '.join(still)} — set them in .env, or type 'skip'.")
+
+    # 3) Probe the REAL source (never silently mock). Force real adapter mode for
+    #    the duration of the probe, then restore.
+    mode_vars = {"kafka": "AIREN_KAFKA_MODE", "redshift": "AIREN_REDSHIFT_MODE"}
+    mvar = mode_vars.get(src)
+    prev = os.environ.get(mvar) if mvar else None
+    if mvar:
+        os.environ[mvar] = "real"
+    print(f"  ⏳ probing the live {src} source (read-only sample)…")
+    try:
+        observed = probe_source(wc)
+    finally:
+        if mvar:
+            if prev is None:
+                os.environ.pop(mvar, None)
+            else:
+                os.environ[mvar] = prev
+
     if observed is None:
-        print("  ⚠ couldn't reach the source / no data — skipping. Fill tap.field_map "
-              "by hand, or re-run onboarding on a host that can reach it (e.g. the EC2 box).")
+        print(f"  ⚠ couldn't reach the live {src} source / no data — skipping.\n"
+              "    Check the broker/topic/creds, then re-run; or fill tap.field_map by hand.")
         return
 
     prop = infer_field_roles(observed)

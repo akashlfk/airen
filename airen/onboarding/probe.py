@@ -173,12 +173,20 @@ def required_connection_info(config: AirenServiceConfig) -> list[tuple[str, str]
     gaps: list[tuple[str, str]] = []
     if src == "kafka":
         k = config.kafka
+        # non-secrets → yaml (prompted + written to airen.yaml)
         if not (k and k.bootstrap_servers) and not os.environ.get("KAFKA_BOOTSTRAP_SERVERS"):
             gaps.append(("kafka.bootstrap_servers", "Kafka bootstrap servers (host:port)"))
         if not (k and k.output_topic):
             gaps.append(("kafka.output_topic", "Kafka topic that carries predictions"))
+        if not (k and k.security_protocol) and not os.environ.get("KAFKA_SECURITY_PROTOCOL"):
+            gaps.append(("kafka.security_protocol", "Kafka security protocol (e.g. SASL_SSL; blank if none)"))
+        if not (k and k.sasl_mechanism) and not os.environ.get("KAFKA_SASL_MECHANISM"):
+            gaps.append(("kafka.sasl_mechanism", "Kafka SASL mechanism (e.g. PLAIN; blank if none)"))
+        # secrets → .env only
+        if not os.environ.get("KAFKA_SASL_USERNAME"):
+            gaps.append(("env:KAFKA_SASL_USERNAME", "Kafka SASL username"))
         if not os.environ.get("KAFKA_SASL_PASSWORD"):
-            gaps.append(("env:KAFKA_SASL_PASSWORD", "Kafka SASL password (set in .env)"))
+            gaps.append(("env:KAFKA_SASL_PASSWORD", "Kafka SASL password"))
     elif src == "redshift":
         r = config.redshift
         if not (r and r.host) and not os.environ.get("REDSHIFT_HOST"):

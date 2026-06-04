@@ -55,6 +55,10 @@ class RealKafkaAdapter:
         partition_timeout_sec: float = 10.0,
         watermark_timeout_sec: float = 5.0,
         poll_timeout_sec: float = 5.0,
+        *,
+        bootstrap_servers: str | None = None,
+        security_protocol: str | None = None,
+        sasl_mechanism: str | None = None,
     ) -> None:
         try:
             from confluent_kafka import Consumer  # noqa: F401
@@ -64,9 +68,11 @@ class RealKafkaAdapter:
                 "    conda run -n mlre pip install 'confluent-kafka>=2.5'"
             ) from e
 
-        bootstrap = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "").strip()
+        # Non-secrets come from airen.yaml (passed in); env is the fallback.
+        # The SASL username/password are secrets → env only.
+        bootstrap = (bootstrap_servers or os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "")).strip()
         if not bootstrap:
-            raise RuntimeError("KAFKA_BOOTSTRAP_SERVERS not set in .env")
+            raise RuntimeError("Kafka bootstrap servers not set (kafka.bootstrap_servers in airen.yaml or KAFKA_BOOTSTRAP_SERVERS in .env)")
         # Topic resolution order:
         #   1. explicit `topic` arg
         #   2. KAFKA_TOPIC env (legacy single-topic config)
@@ -94,13 +100,15 @@ class RealKafkaAdapter:
             "enable.auto.commit": False,
             "session.timeout.ms": 10000,
         }
-        if os.environ.get("KAFKA_SECURITY_PROTOCOL"):
-            config["security.protocol"] = os.environ["KAFKA_SECURITY_PROTOCOL"]
-        if os.environ.get("KAFKA_SASL_MECHANISM"):
-            config["sasl.mechanism"] = os.environ["KAFKA_SASL_MECHANISM"]
-        if os.environ.get("KAFKA_SASL_USERNAME"):
+        sec = security_protocol or os.environ.get("KAFKA_SECURITY_PROTOCOL")
+        mech = sasl_mechanism or os.environ.get("KAFKA_SASL_MECHANISM")
+        if sec:
+            config["security.protocol"] = sec
+        if mech:
+            config["sasl.mechanism"] = mech
+        if os.environ.get("KAFKA_SASL_USERNAME"):       # secret → env only
             config["sasl.username"] = os.environ["KAFKA_SASL_USERNAME"]
-        if os.environ.get("KAFKA_SASL_PASSWORD"):
+        if os.environ.get("KAFKA_SASL_PASSWORD"):       # secret → env only
             config["sasl.password"] = os.environ["KAFKA_SASL_PASSWORD"]
 
         from confluent_kafka import Consumer
