@@ -162,11 +162,15 @@ def infer_service_config(manifest: RepoManifest, service_name: str | None = None
     notes.append(" · ".join(obs_bits))
 
     # If the error attribute couldn't be found in code, Sentinel has nothing to
-    # average — must ask. (Defaults to TL-ETA's only as a last resort.)
+    # average — must ask. Default is problem-type aware (a generic placeholder,
+    # not TL-ETA's), and matches what the Kafka tap writes (eval.error).
+    _default_metric = obs.error_attribute or (
+        "eval.is_correct" if obs.problem_type == "classification" else "eval.error"
+    )
     gaps.append(Gap(
         key="observation.error_attribute",
         prompt="Span attribute holding the per-prediction error/score Sentinel averages",
-        default=obs.error_attribute or "eval.absolute_error_minutes",
+        default=_default_metric,
         required=True,
     ))
 

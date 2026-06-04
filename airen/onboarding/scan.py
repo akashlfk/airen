@@ -88,6 +88,25 @@ def _build_manifest(root: Path, *, source: str, is_remote: bool,
     )
 
 
+def _build_and_save_code_graph(root: Path, source: str, is_remote: bool) -> None:
+    """Also build the full AST code knowledge graph during onboarding (best-effort).
+    Saves graphs/<slug>.codegraph.json and exports to Neo4j if configured."""
+    import os
+
+    try:
+        from airen.onboarding.code_graph import build_code_graph, export_to_neo4j
+        from airen.onboarding.manifest import RepoManifest
+
+        g = build_code_graph(root, source=source)
+        path = g.save(RepoManifest.slug_for(source, is_remote))
+        s = g.summary()
+        print(f"  🕸  code graph: {s['n_nodes']} nodes, {s['n_edges']} edges → {path.name}")
+        if os.environ.get("NEO4J_URI"):
+            print(f"  🕸  neo4j: {export_to_neo4j(g)}")
+    except Exception as e:  # noqa: BLE001
+        print(f"  (code graph skipped: {type(e).__name__}: {e})")
+
+
 def graphify_local(path: str | Path, *, save: bool = True) -> RepoManifest:
     """Build a manifest from an already-checked-out directory."""
     root = Path(path).resolve()
@@ -99,6 +118,7 @@ def graphify_local(path: str | Path, *, save: bool = True) -> RepoManifest:
     )
     if save:
         manifest.save()
+        _build_and_save_code_graph(root, str(root), is_remote=False)
     return manifest
 
 
@@ -114,4 +134,5 @@ def graphify(repo: str, *, branch: str | None = None, save: bool = True) -> Repo
     )
     if save:
         manifest.save()
+        _build_and_save_code_graph(root, repo, is_remote=True)
     return manifest
