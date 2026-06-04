@@ -50,6 +50,20 @@ def _clone_url(repo: str) -> str:
     return f"https://github.com/{repo}.git"
 
 
+def _git_scrubbed(cmd: list[str], *, timeout: int) -> None:
+    """Run a git command, raising a RuntimeError with the token REDACTED from
+    both the command and stderr. Never let a PAT leak into a traceback/log."""
+    token = os.environ.get("GITHUB_TOKEN", "").strip()
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    if proc.returncode != 0:
+        stderr = (proc.stderr or "").strip()
+        if token:
+            stderr = stderr.replace(token, "<TOKEN_REDACTED>")
+        # don't echo the full cmd (it contains the token in the clone URL)
+        verb = cmd[1] if len(cmd) > 1 else "git"
+        raise RuntimeError(f"git {verb} failed ({proc.returncode}): {stderr[:500]}")
+
+
 def _ensure_repo(repo: str, branch: str | None = None) -> Path:
     """Clone or update the local cache for `repo`. If `branch` is given, clone /
     check out exactly that branch. Returns the local path.
@@ -65,20 +79,17 @@ def _ensure_repo(repo: str, branch: str | None = None) -> Path:
         if branch:
             cmd += ["--branch", branch, "--single-branch"]
         cmd += [_clone_url(repo), str(target)]
-        subprocess.run(cmd, check=True, capture_output=True, timeout=120)
+        _git_scrubbed(cmd, timeout=120)
     else:
         try:
             ref = f"origin/{branch}" if branch else "origin/HEAD"
-            subprocess.run(
+            _git_scrubbed(
                 ["git", "-C", str(target), "fetch", "--depth", "50", "origin"]
                 + ([branch] if branch else []),
-                check=True, capture_output=True, timeout=60,
+                timeout=60,
             )
-            subprocess.run(
-                ["git", "-C", str(target), "reset", "--hard", ref],
-                check=True, capture_output=True, timeout=30,
-            )
-        except subprocess.CalledProcessError:
+            _git_scrubbed(["git", "-C", str(target), "reset", "--hard", ref], timeout=30)
+        except RuntimeError:
             pass  # cached version still usable
     return target
 
