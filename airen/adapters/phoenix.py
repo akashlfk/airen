@@ -33,14 +33,22 @@ def get_recent_spans(
     The returned DataFrame is the raw Phoenix shape — nested `attributes.mlre`
     column holds a dict. Use _flatten_mlre() to expand it.
     """
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=lookback_minutes)
+    # Push the time filter server-side (fewer rows) AND give the query a real
+    # timeout — the client default is 5s, which a multi-thousand-span fetch blows
+    # through, throwing ReadTimeout that upstream then swallows as "0 spans".
+    timeout = int(os.environ.get("PHOENIX_QUERY_TIMEOUT", "120"))
     spans = _client().spans.get_spans_dataframe(
-        project_identifier=project_name, limit=limit
+        project_identifier=project_name,
+        start_time=cutoff,
+        limit=limit,
+        timeout=timeout,
     )
     if spans.empty:
         return spans
 
-    # Filter to lookback window. Phoenix stores start_time as nanoseconds since epoch.
-    cutoff = datetime.now(timezone.utc) - timedelta(minutes=lookback_minutes)
+    # Belt-and-suspenders: re-apply the window client-side in case the server
+    # ignores start_time. Phoenix stores start_time as ns since epoch.
     if "start_time" in spans.columns:
         spans = spans[pd.to_datetime(spans["start_time"], utc=True) >= cutoff]
     return spans

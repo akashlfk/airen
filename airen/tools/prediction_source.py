@@ -42,7 +42,9 @@ def fetch_predictions(config: AirenServiceConfig, window_minutes: int, max_rows:
         if src == "redshift":
             return _from_redshift(config, window_minutes, max_rows)
         return _from_phoenix(config, window_minutes)
-    except Exception:
+    except Exception as e:  # noqa: BLE001 — degrade to no-data, but say WHY
+        import sys
+        print(f"  ⚠ fetch_predictions({src}) failed: {type(e).__name__}: {e}", file=sys.stderr)
         return pd.DataFrame()
 
 
