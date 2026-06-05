@@ -191,12 +191,25 @@ def infer_field_roles(observed: ObservedSchema) -> RoleProposal:
 # ───────────────────────────────────────────────────────────────────────
 #  connection-info gaps + live probe
 # ───────────────────────────────────────────────────────────────────────
+def probe_source_kind(config: AirenServiceConfig) -> str:
+    """Where the PROBE should read — i.e. where the data physically is RIGHT NOW.
+    This can differ from the runtime `prediction_source`: an async-kafka service
+    reads its predictions from Kafka (the tap later bridges them into Phoenix, so
+    runtime prediction_source=phoenix), and a batch service from Redshift."""
+    mode = config.serving.mode
+    if mode == "async-kafka":
+        return "kafka"
+    if mode == "batch":
+        return "redshift"
+    return config.serving.prediction_source or "phoenix"
+
+
 def required_connection_info(config: AirenServiceConfig) -> list[tuple[str, str]]:
     """What's still needed to REACH the source, so the agent can prompt for it.
     Returns [(field_path, human_prompt)]. Secrets are reported by env-var name."""
     import os
 
-    src = config.serving.prediction_source or "phoenix"
+    src = probe_source_kind(config)
     gaps: list[tuple[str, str]] = []
     if src == "kafka":
         k = config.kafka
@@ -235,10 +248,16 @@ def probe_source(config: AirenServiceConfig, *, max_rows: int = 300, window_minu
     if unreachable / no data. Reuses the prediction-source dispatcher."""
     from airen.tools.prediction_source import fetch_predictions
 
+    # Probe the source where the data ACTUALLY is (kafka for async-kafka), even if
+    # the runtime prediction_source is phoenix (tap-bridged). Read from a copy with
+    # prediction_source overridden so fetch_predictions hits the right backend.
+    kind = probe_source_kind(config)
+    probe_cfg = config.model_copy(deep=True)
+    probe_cfg.serving.prediction_source = kind
     try:
-        df = fetch_predictions(config, window_minutes=window_minutes, max_rows=max_rows)
+        df = fetch_predictions(probe_cfg, window_minutes=window_minutes, max_rows=max_rows)
     except Exception:
         return None
     if df is None or df.empty:
         return None
-    return summarize_dataframe(df, source=config.serving.prediction_source or "phoenix")
+    return summarize_dataframe(df, source=kind)

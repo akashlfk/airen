@@ -117,10 +117,14 @@ def infer_service_config(manifest: RepoManifest, service_name: str | None = None
 
     # ── serving topology — how the inference layer emits predictions ──
     st = manifest.serving
-    if manifest.observability.uses_phoenix:
+    # prediction_source = where Airen READS at RUNTIME (Sentinel/calibration).
+    # For an async-kafka service the predictions live on Kafka, but Airen doesn't
+    # read Kafka directly at runtime — the Kafka→Phoenix tap bridges them into
+    # Phoenix spans, and Airen reads Phoenix. So async-kafka ⇒ phoenix here.
+    # (Onboarding's PROBE still samples Kafka directly to detect the fields; see
+    # probe.probe_source_kind.) Batch services are read straight from Redshift.
+    if st.mode == "async-kafka":
         pred_src = "phoenix"
-    elif st.mode == "async-kafka":
-        pred_src = "kafka"
     elif st.mode == "batch":
         pred_src = "redshift"
     else:
@@ -140,12 +144,15 @@ def infer_service_config(manifest: RepoManifest, service_name: str | None = None
     if st.scheduler:
         topo_bits.append(f"scheduler: {st.scheduler}")
     notes.append(" · ".join(topo_bits))
-    notes.append(f"prediction source (live feed): {pred_src}")
-    if pred_src != "phoenix":
+    notes.append(f"prediction source (runtime, Sentinel reads): {pred_src}")
+    if st.mode == "async-kafka":
         notes.append(
-            "ⓘ Sentinel reads Phoenix today; prediction_source declares intent "
-            "for the topology-aware feed (Kafka/Redshift) coming later."
+            "ⓘ Kafka service → predictions are bridged into Phoenix by the tap. "
+            "Run `python -m airen.run_kafka_tap --service <name>` (or --loop) so "
+            "Sentinel sees fresh data. Onboarding probes Kafka directly to map fields."
         )
+    elif pred_src == "redshift":
+        notes.append("ⓘ Batch service → Airen reads the predictions table in Redshift directly.")
 
     if st.mode == "async-kafka":
         gaps.append(Gap(

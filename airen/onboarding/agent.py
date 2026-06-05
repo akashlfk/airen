@@ -160,8 +160,16 @@ def onboard_from_repo(
             cfg["service"]["context"] = ctx
 
         # Live probe: sample the real source to auto-detect fields → tap.field_map
-        # + observation. Prompts for any connection info it needs first.
-        src = (cfg.get("serving") or {}).get("prediction_source", "phoenix")
+        # + observation. Prompts for any connection info it needs first. Name the
+        # source where the data physically lives (async-kafka → kafka, even though
+        # runtime prediction_source is phoenix via the tap).
+        _sv = cfg.get("serving") or {}
+        if _sv.get("mode") == "async-kafka":
+            src = "kafka"
+        elif _sv.get("mode") == "batch":
+            src = "redshift"
+        else:
+            src = _sv.get("prediction_source", "phoenix")
         if io.ask_bool(f"Probe the live {src} source now to auto-detect its fields?", default=False):
             try:
                 _probe_and_apply(cfg)
@@ -289,13 +297,20 @@ def _probe_and_apply(cfg: dict) -> None:
     """Prompt for connection info, probe the live source, infer field roles, and
     (with confirmation) write tap.field_map + observation into the config."""
     from airen.config import AirenServiceConfig
-    from airen.onboarding.probe import infer_field_roles, probe_source, required_connection_info
+    from airen.onboarding.probe import (
+        infer_field_roles,
+        probe_source,
+        probe_source_kind,
+        required_connection_info,
+    )
 
     svc_name = (cfg.get("service") or {}).get("name", "service")
 
     # The Kafka dispatcher reads kafka.output_topic — mirror serving.output_topic.
+    # (An async-kafka service has prediction_source=phoenix now — the tap bridges
+    # Kafka→Phoenix — so key this off the serving MODE, not prediction_source.)
     serving = cfg.get("serving") or {}
-    if serving.get("prediction_source") == "kafka" and serving.get("output_topic"):
+    if serving.get("mode") == "async-kafka" and serving.get("output_topic"):
         cfg.setdefault("kafka", {}).setdefault("output_topic", serving["output_topic"])
 
     def _working_config():
@@ -319,7 +334,10 @@ def _probe_and_apply(cfg: dict) -> None:
     import os
     from pathlib import Path
 
-    src = (cfg.get("serving") or {}).get("prediction_source", "phoenix")
+    # Where the PROBE reads (where the data physically is) — for an async-kafka
+    # service this is "kafka" even though the runtime prediction_source is
+    # "phoenix" (the tap bridges Kafka→Phoenix). See probe.probe_source_kind.
+    src = probe_source_kind(wc)
 
     # 1) Prompt for non-secret connection config → write into the yaml (cfg).
     #    Collect missing SECRET env vars separately.
