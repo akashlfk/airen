@@ -131,7 +131,7 @@ def infer_service_config(manifest: RepoManifest, service_name: str | None = None
     if st.mode == "async-kafka":
         gaps.append(Gap(
             key="serving.output_topic",
-            prompt="Which Kafka topic carries the predictions Airen should watch?",
+            prompt="Which Kafka OUTPUT topic does the model PUBLISH predictions to? (the feed Airen watches — not the input/request topic)",
             default=(st.kafka_topics[-1] if st.kafka_topics else None),
             kind="str",
         ))

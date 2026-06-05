@@ -192,7 +192,9 @@ def required_connection_info(config: AirenServiceConfig) -> list[tuple[str, str]
         if not (k and k.bootstrap_servers) and not os.environ.get("KAFKA_BOOTSTRAP_SERVERS"):
             gaps.append(("kafka.bootstrap_servers", "Kafka bootstrap servers (host:port)"))
         if not (k and k.output_topic):
-            gaps.append(("kafka.output_topic", "Kafka topic that carries predictions"))
+            gaps.append(("kafka.output_topic",
+                         "Kafka OUTPUT topic where the model PUBLISHES its predictions "
+                         "(the feed Airen watches, e.g. prod_ml_output) — NOT the input/request topic"))
         if not (k and k.security_protocol) and not os.environ.get("KAFKA_SECURITY_PROTOCOL"):
             gaps.append(("kafka.security_protocol", "Kafka security protocol (e.g. SASL_SSL; blank if none)"))
         if not (k and k.sasl_mechanism) and not os.environ.get("KAFKA_SASL_MECHANISM"):
