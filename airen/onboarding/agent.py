@@ -34,6 +34,16 @@ def _set(cfg: dict, dotted: str, value) -> None:
     cur[parts[-1]] = value
 
 
+def _get(cfg: dict, dotted: str):
+    """Read a dotted key from the config dict, or None if absent."""
+    cur = cfg
+    for p in dotted.split("."):
+        if not isinstance(cur, dict) or p not in cur:
+            return None
+        cur = cur[p]
+    return cur
+
+
 def _coerce(gap: Gap, raw: str | None):
     if raw is None or raw == "":
         return None
@@ -193,6 +203,9 @@ def onboard_from_repo(
             if gap.key == "jira.project_key":
                 _apply_jira(cfg, gap)
                 continue
+            # Skip anything the probe/graphify already answered — no double-asking.
+            if not gap.key.startswith("_") and _get(cfg, gap.key) not in (None, "", []):
+                continue
             raw = io.ask(gap.prompt, gap.default)
             val = _coerce(gap, raw)
             if gap.key == "slack.alert_channel":
@@ -269,12 +282,7 @@ def _probe_and_apply(cfg: dict) -> None:
     from airen.config import AirenServiceConfig
     from airen.onboarding.probe import infer_field_roles, probe_source, required_connection_info
 
-    # Ensure the config is valid enough to build/probe BEFORE the phoenix gap is
-    # asked: AirenServiceConfig requires phoenix.project_name, so set a
-    # placeholder (the real value is asked later and overrides it). For a kafka
-    # source the probe doesn't use phoenix anyway.
     svc_name = (cfg.get("service") or {}).get("name", "service")
-    cfg.setdefault("phoenix", {}).setdefault("project_name", f"{svc_name}-prediction")
 
     # The Kafka dispatcher reads kafka.output_topic — mirror serving.output_topic.
     serving = cfg.get("serving") or {}
@@ -282,8 +290,15 @@ def _probe_and_apply(cfg: dict) -> None:
         cfg.setdefault("kafka", {}).setdefault("output_topic", serving["output_topic"])
 
     def _working_config():
+        # AirenServiceConfig requires phoenix.project_name. Use a placeholder ONLY
+        # in a COPY for validation — never written to cfg — so the phoenix gap
+        # still gets asked later (and isn't silently skipped).
+        import copy
+
+        probe_cfg = copy.deepcopy(cfg)
+        probe_cfg.setdefault("phoenix", {}).setdefault("project_name", f"{svc_name}-prediction")
         try:
-            return AirenServiceConfig.model_validate(cfg)
+            return AirenServiceConfig.model_validate(probe_cfg)
         except Exception as e:  # noqa: BLE001
             print(f"  (can't probe — config not valid yet: {e})")
             return None
@@ -308,6 +323,10 @@ def _probe_and_apply(cfg: dict) -> None:
             if val:
                 blk, fld = keypath.split(".", 1)
                 cfg.setdefault(blk, {})[fld] = val
+    # Mirror the topic both ways so the later serving.output_topic gap is skipped
+    # (no asking for the output topic twice).
+    if cfg.get("kafka", {}).get("output_topic"):
+        cfg.setdefault("serving", {})["output_topic"] = cfg["kafka"]["output_topic"]
     wc = _working_config() or wc
 
     # 2) If secrets are missing, PAUSE — don't silently fall back to mock.
