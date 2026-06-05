@@ -57,3 +57,21 @@ def test_infer_roles_explicit_error_field():
     prop = infer_field_roles(summarize_dataframe(df, "kafka"))
     assert prop.tap_field_map["prediction"] == "predicted_eta"
     assert prop.tap_field_map["error"] == "abs_error_minutes"
+
+
+def test_summarize_handles_nested_fields():
+    import pandas as pd
+    from airen.onboarding.probe import infer_field_roles, summarize_dataframe
+    df = pd.DataFrame({
+        "predicted_eta_minutes": [600.0, 700.0],
+        "meta": [{"a": 1}, {"b": 2}],      # nested dict — must not crash nunique()
+        "tags": [["x"], ["y"]],            # nested list
+        "shipper": ["A", "B"],
+    })
+    obs = summarize_dataframe(df, "kafka")
+    kinds = {f.name: f.kind for f in obs.fields}
+    assert kinds["predicted_eta_minutes"] == "numeric"
+    assert kinds["meta"] == "nested" and kinds["tags"] == "nested"
+    prop = infer_field_roles(obs)               # must not raise
+    assert "meta" not in prop.tap_field_map.get("inputs", [])
+    assert "shipper" in prop.tap_field_map.get("inputs", [])

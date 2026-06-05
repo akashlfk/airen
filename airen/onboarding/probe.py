@@ -49,24 +49,39 @@ class ObservedSchema:
     fields: list[ObservedField] = field(default_factory=list)
 
 
+def _safe_ndistinct(s: pd.Series) -> int:
+    """Distinct count that tolerates unhashable values (nested dict/list fields)."""
+    try:
+        return int(s.nunique())
+    except TypeError:
+        return int(len({str(v) for v in s}))
+
+
 def summarize_dataframe(df: pd.DataFrame, source: str = "?") -> ObservedSchema:
-    """Turn a sample DataFrame into a typed field summary (pure)."""
+    """Turn a sample DataFrame into a typed field summary (pure). Tolerant of
+    nested (dict/list) fields that real prediction messages often carry."""
     out = ObservedSchema(source=source, n_sampled=int(len(df)))
     if df.empty:
         return out
     for col in df.columns:
         s = df[col].dropna()
         if s.empty:
-            kind, sample = "other", None
-        elif pd.api.types.is_bool_dtype(s):
-            kind, sample = "bool", bool(s.iloc[0])
-        elif pd.api.types.is_numeric_dtype(pd.to_numeric(s, errors="coerce")) and pd.to_numeric(s, errors="coerce").notna().mean() > 0.8:
-            kind, sample = "numeric", float(pd.to_numeric(s, errors="coerce").dropna().iloc[0])
+            out.fields.append(ObservedField(str(col), "empty", None, 0))
+            continue
+        first = s.iloc[0]
+        # Nested JSON (dict/list) → not a scalar feature/metric; record + skip.
+        if isinstance(first, (dict, list, set, tuple)):
+            out.fields.append(ObservedField(str(col), "nested", str(first)[:80], _safe_ndistinct(s)))
+            continue
+        if pd.api.types.is_bool_dtype(s) or all(isinstance(v, bool) for v in s.head(20)):
+            kind, sample = "bool", bool(first)
         else:
-            kind, sample = "categorical", str(s.iloc[0])
-        out.fields.append(ObservedField(
-            name=str(col), kind=kind, sample=sample, n_distinct=int(s.nunique()),
-        ))
+            num = pd.to_numeric(s, errors="coerce")
+            if num.notna().mean() > 0.8:
+                kind, sample = "numeric", float(num.dropna().iloc[0])
+            else:
+                kind, sample = "categorical", str(first)
+        out.fields.append(ObservedField(str(col), kind, sample, _safe_ndistinct(s)))
     return out
 
 
