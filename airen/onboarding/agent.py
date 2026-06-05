@@ -152,16 +152,20 @@ def onboard_from_repo(
         # let the human curate the auto-detected attributes_of_interest
         gh = cfg.get("github")
         if gh and gh.get("attributes_of_interest"):
+            print("\n  Code symbols the Investigator will search for during root-cause analysis "
+                  "(auto-detected from your repo). Edit the list or press Enter to accept:")
             gh["attributes_of_interest"] = io.ask_list(
-                "attributes_of_interest (Investigator watches these)",
+                "  code symbols to watch",
                 default=gh["attributes_of_interest"],
             )
 
         # let the human curate the detected segmentation dimensions
         obs_cfg = cfg.get("observation")
         if obs_cfg and obs_cfg.get("segments"):
+            print("\n  Fields to break health down by — Airen reports the metric separately for "
+                  "each value of these (e.g. per shipper). Edit or press Enter to accept:")
             obs_cfg["segments"] = io.ask_list(
-                "observation.segments (span attrs Sentinel groups health by)",
+                "  segment-by fields",
                 default=obs_cfg["segments"],
             )
 

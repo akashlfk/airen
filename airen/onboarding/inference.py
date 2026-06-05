@@ -79,7 +79,7 @@ def infer_service_config(manifest: RepoManifest, service_name: str | None = None
     else:
         gaps.append(Gap(
             key="phoenix.project_name",
-            prompt="Phoenix project the live service emits spans to",
+            prompt="What name should the Phoenix project use for this service's prediction spans? (the tap writes here, Sentinel reads here)",
             default=f"{service_name}-prediction",
             required=True,
         ))
@@ -131,14 +131,14 @@ def infer_service_config(manifest: RepoManifest, service_name: str | None = None
     if st.mode == "async-kafka":
         gaps.append(Gap(
             key="serving.output_topic",
-            prompt="Kafka topic predictions land on (the live feed Airen should watch)",
+            prompt="Which Kafka topic carries the predictions Airen should watch?",
             default=(st.kafka_topics[-1] if st.kafka_topics else None),
             kind="str",
         ))
         if len(st.kafka_topics) >= 2:
             gaps.append(Gap(
                 key="serving.input_topic",
-                prompt="Kafka topic the model consumes (input)",
+                prompt="Which Kafka topic does the model consume as input? (optional)",
                 default=st.kafka_topics[0], kind="str",
             ))
 
@@ -169,7 +169,7 @@ def infer_service_config(manifest: RepoManifest, service_name: str | None = None
     )
     gaps.append(Gap(
         key="observation.error_attribute",
-        prompt="Span attribute holding the per-prediction error/score Sentinel averages",
+        prompt="Which field in each prediction holds the error/score Airen should track? (e.g. eval.error)",
         default=_default_metric,
         required=True,
     ))
@@ -198,8 +198,8 @@ def infer_service_config(manifest: RepoManifest, service_name: str | None = None
         gaps.append(Gap(
             key="_model_registry_ids",
             prompt=(
-                "MLflow experiment id(s) for the detected models "
-                "(blank to leave as 'TBD' in the yaml)"
+                "If you know the MLflow experiment id(s) for these models, enter them "
+                "(comma-separated, in the order shown); blank = leave 'TBD' for now"
             ),
             kind="str",
         ))
@@ -207,18 +207,19 @@ def infer_service_config(manifest: RepoManifest, service_name: str | None = None
     # ── sentinel: code can't tell us what 'healthy' is ──
     gaps.extend([
         Gap("sentinel.baseline_mae_minutes",
-            "Healthy baseline error (MAE, in minutes) — code can't infer this",
+            "What's a HEALTHY value for that metric? (Airen alerts when production drifts worse than this; for ETA it's avg error in minutes)",
             default="150", kind="float"),
         Gap("sentinel.critical_ratio",
-            "CRITICAL when current/baseline ratio ≥", default="2.0", kind="float"),
+            "Fire a CRITICAL alert when production is this many times worse than the healthy value (e.g. 2 = twice as bad)",
+            default="2.0", kind="float"),
     ])
 
     # ── reporting destinations ──
     gaps.append(Gap("slack.alert_channel",
-                    "Slack alert channel (blank → global SLACK_CHANNEL env)",
+                    "Which Slack channel should Airen post incidents to? (e.g. #ml-alerts; blank = use the global SLACK_CHANNEL)",
                     default=None, kind="str"))
     gaps.append(Gap("jira.project_key",
-                    "Jira project key for incidents (blank → Jira disabled)",
+                    "Which Jira project key should Airen file incident tickets under? (e.g. ETAI; blank = don't use Jira)",
                     default=None, kind="str"))
 
     return Inferred(config=cfg, gaps=gaps, notes=notes)
