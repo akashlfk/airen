@@ -189,6 +189,11 @@ def main() -> None:
         except (KeyboardInterrupt, EOFError):
             print("\n\n✗ Onboarding cancelled. Nothing written.\n")
             sys.exit(130)
+        except Exception as e:  # noqa: BLE001 — keep onboarding from dumping a traceback
+            print(f"\n❌ Onboarding failed: {type(e).__name__}: {e}")
+            print("   Nothing was written. Common causes: repo/branch not found, the token "
+                  "can't access the repo (private/SSO), or no network. Fix and re-run.")
+            sys.exit(1)
         return
 
     # ── Manual path: pure interview ──

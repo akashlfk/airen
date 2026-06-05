@@ -141,6 +141,15 @@ def onboard_from_repo(
         name = io.ask_required("Service name", name)
         cfg["service"]["name"] = name
 
+        # The Investigator needs the GitHub repo to inspect commits. graphify sets
+        # it for --repo onboards; for --path it can't know it, so ask.
+        if not (cfg.get("github") or {}).get("repo"):
+            gh_repo = io.ask(
+                "GitHub repo for the Investigator to analyze (owner/repo; blank to skip)", None
+            )
+            if gh_repo:
+                cfg.setdefault("github", {})["repo"] = gh_repo
+
         # Operator context fed to the Investigator + RCA agents (out-of-band
         # knowledge the repo doesn't contain).
         ctx = io.ask(

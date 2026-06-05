@@ -173,6 +173,18 @@ def infer_field_roles(observed: ObservedSchema) -> RoleProposal:
         "error_attribute": "eval.error",
         "segments": [f"input.{s}" for s in segs],
     }
+    # Reconcile problem_type from the REAL data (overrides graphify's code guess):
+    # a score-like prediction (is_correct/label/proba) → classification; a plain
+    # numeric prediction → regression.
+    if pred:
+        pl = pred.lower()
+        if any(h in pl for h in ("is_correct", "correct", "accuracy", "label", "class", "proba", "prob")):
+            observation["problem_type"] = "classification"
+            observation["metric_direction"] = "higher_is_better"
+        else:
+            observation["problem_type"] = "regression"
+            observation["metric_direction"] = "lower_is_better"
+        notes.append(f"problem type (from data): {observation['problem_type']}")
     return RoleProposal(tap_field_map=field_map, observation=observation, notes=notes, ambiguities=amb)
 
 
