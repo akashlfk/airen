@@ -68,13 +68,20 @@ def _build_adapter(mode: str, args: argparse.Namespace) -> KafkaAdapter:
         source = getattr(args, "source", "output")
         if not explicit:
             explicit = os.environ.get(f"KAFKA_{source.upper()}_TOPIC")
-        return RealKafkaAdapter(topic=explicit)
+        kc = getattr(args, "_kafka_cfg", None)   # yaml broker/protocol/mechanism (creds stay in .env)
+        return RealKafkaAdapter(
+            topic=explicit,
+            bootstrap_servers=kc.bootstrap_servers if kc else None,
+            security_protocol=kc.security_protocol if kc else None,
+            sasl_mechanism=kc.sasl_mechanism if kc else None,
+        )
     raise ValueError(f"unknown mode: {mode}")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", choices=["mock", "real"], default="mock")
+    parser.add_argument("--mode", choices=["mock", "real"], default=None,
+                        help="default: real when --service is given, else mock")
     parser.add_argument("--max", type=int, default=None, help="stop after N messages (real default: 10)")
     parser.add_argument(
         "--source",
@@ -103,20 +110,28 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    # Resolve the Phoenix project + (optional) config-driven field map.
+    # Naming a real service implies you want REAL data — default to real mode so
+    # you don't silently get synthetic messages.
+    if args.mode is None:
+        args.mode = "real" if args.service else "mock"
+
+    # Resolve the Phoenix project + (optional) config-driven field map + kafka conn.
     project = os.environ.get("PHOENIX_PROJECT_NAME_TAP", "airen-tap")
     field_map = None
+    kafka_cfg = None
     if args.service:
         from airen.config import load_service_config
 
         cfg = load_service_config(args.service)
         project = cfg.phoenix.project_name
         field_map = cfg.tap.field_map
+        kafka_cfg = cfg.kafka  # bootstrap/protocol/mechanism from the yaml
         # Default the real-mode topic to the service's configured output topic.
         if cfg.kafka and cfg.kafka.output_topic and not args.topic:
             args.topic = cfg.kafka.output_topic
-        print(f"Using service '{args.service}': project={project}, "
+        print(f"Using service '{args.service}': mode={args.mode}, project={project}, "
               f"topic={args.topic or '(env)'}, field_map={'yes' if field_map else 'default'}")
+    args._kafka_cfg = kafka_cfg  # consumed by _build_adapter (real mode)
 
     # Register the tracer against the SERVICE's project (not airen-dev).
     tracer_provider = register(project_name=project, auto_instrument=False)
