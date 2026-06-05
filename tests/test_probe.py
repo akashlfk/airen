@@ -75,3 +75,17 @@ def test_summarize_handles_nested_fields():
     prop = infer_field_roles(obs)               # must not raise
     assert "meta" not in prop.tap_field_map.get("inputs", [])
     assert "shipper" in prop.tap_field_map.get("inputs", [])
+
+
+def test_select_model_families_drops_layers():
+    from airen.onboarding.inference import _select_model_families
+
+    class M:
+        def __init__(self, n): self.name = n
+    detected = ["ChannelAttention", "ExpertHead", "ImprovedLSTMModel",
+                "ImprovedLSTMModelMultiHead", "LearnablePositionalEncoding", "MultiHeadAttention"]
+    kept = [m.name for m in _select_model_families([M(n) for n in detected])]
+    assert kept == ["ImprovedLSTMModel", "ImprovedLSTMModelMultiHead"]
+    # if nothing looks like a model, fall back to non-layer classes (never empty)
+    only_layers = [M("MultiHeadAttention"), M("LayerNorm")]
+    assert _select_model_families(only_layers)  # not empty

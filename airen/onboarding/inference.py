@@ -24,6 +24,25 @@ class Gap:
     required: bool = False
 
 
+# Markers that distinguish a deployable MODEL from an internal layer/sub-component.
+_MODEL_MARKERS = ("model", "net", "predictor", "classifier", "regressor", "transformer",
+                  "lstm", "gru", "rnn", "xgb", "boost", "forest", "gbm", "estimator")
+_LAYER_MARKERS = ("attention", "encoding", "embedding", "head", "block", "norm", "ffn",
+                  "positional", "layer", "encoder", "decoder", "cell", "gate", "conv",
+                  "pool", "mlp", "expert", "activation", "dropout")
+
+
+def _select_model_families(models: list) -> list:
+    """Keep only top-level models, not internal layers. Prefer classes whose name
+    looks like a model (…Model/Net/LSTM/…); else drop obvious layer names; never
+    return empty if there were any models."""
+    named = [m for m in models if any(k in (m.name or "").lower() for k in _MODEL_MARKERS)]
+    if named:
+        return named
+    not_layers = [m for m in models if not any(k in (m.name or "").lower() for k in _LAYER_MARKERS)]
+    return not_layers or models
+
+
 @dataclass
 class Inferred:
     config: dict                   # partial AirenServiceConfig dict (validated later)
@@ -185,9 +204,10 @@ def infer_service_config(manifest: RepoManifest, service_name: str | None = None
         if exp:
             notes.append(f"MLflow experiment (from code): {exp}")
 
-    if manifest.models:
+    top_models = _select_model_families(manifest.models)
+    if top_models:
         registry = []
-        for m in manifest.models[:6]:
+        for m in top_models[:6]:
             registry.append({
                 "model_family": m.name,
                 "experiment_id": "TBD",  # code can't know the MLflow id
