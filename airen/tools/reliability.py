@@ -54,7 +54,15 @@ def _split_halves(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame] | None:
     df = df.assign(_ts=ts).dropna(subset=["_ts"])
     if len(df) < 4:
         return None
-    mid = df["_ts"].min() + (df["_ts"].max() - df["_ts"].min()) / 2
+    span = df["_ts"].max() - df["_ts"].min()
+    # No real time axis → "recent vs earlier" is meaningless. A one-shot tap/peek
+    # snapshot stamps every span at emission time, bunching the whole window into
+    # a few seconds; splitting it just compares two arbitrary halves of one
+    # instant and invents drift. Skip the temporal checks in that case. (A looped
+    # tap or a live service spreads spans across real time, so this won't fire.)
+    if span < pd.Timedelta(minutes=2):
+        return None
+    mid = df["_ts"].min() + span / 2
     earlier = df[df["_ts"] <= mid]
     recent = df[df["_ts"] > mid]
     if earlier.empty or recent.empty:
