@@ -20,6 +20,7 @@ Design choices that matter:
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import asdict, dataclass
 
 import pandas as pd
@@ -105,19 +106,55 @@ _RESERVED_COLS = {
 }
 
 
+_ID_NAME = re.compile(
+    r"(?:^|[._])(?:id|ids|uuid|guid|key|keys|hash|geohash|seq|token|loadid)(?:$|[._])",
+    re.I,
+)
+
+
+def _drift_eligible(s: pd.Series) -> bool:
+    """Is this column worth a PSI drift check? Numeric columns are fine (PSI bins
+    them) unless they're effectively a unique key; categorical/text columns only
+    if low-cardinality. High-cardinality categoricals, IDs, hashes and free text
+    make PSI explode on noise — the recent/earlier halves just carry different
+    label sets — so we skip them."""
+    s = s.dropna()
+    n = len(s)
+    if n == 0:
+        return False
+    nu = _safe_nunique(s)
+    if pd.api.types.is_numeric_dtype(s):
+        return not (nu > 50 and nu / n > 0.9)   # not a row-id-like numeric
+    return nu <= 50                              # low-cardinality categorical only
+
+
+def _safe_nunique(s: pd.Series) -> int:
+    try:
+        return int(s.nunique())
+    except TypeError:  # unhashable (nested dict/list) values
+        return int(len({str(v) for v in s}))
+
+
 def _feature_columns(df: pd.DataFrame, error_attribute: str) -> list[str]:
     """The attributes to watch for drift. Prefers Phoenix's `input.*` convention;
-    falls back to 'every column that isn't plumbing' for raw kafka/redshift rows."""
+    falls back to 'every column that isn't plumbing' for raw kafka/redshift rows.
+    Identifier-like and high-cardinality columns are excluded — PSI is noise there."""
     input_cols = [c for c in df.columns if c.startswith("input.")]
     if input_cols:
-        return input_cols
+        candidates = input_cols
+    else:
+        candidates = [
+            c for c in df.columns
+            if c not in _RESERVED_COLS and c != error_attribute
+            and not c.startswith(("eval.", "output."))
+            and "predicted" not in c and "actual" not in c
+        ]
     out: list[str] = []
-    for c in df.columns:
-        if c in _RESERVED_COLS or c == error_attribute:
+    for c in candidates:
+        if _ID_NAME.search(c):          # identifier-like by name → skip
             continue
-        if c.startswith(("eval.", "output.")) or "predicted" in c or "actual" in c:
-            continue
-        out.append(c)
+        if _drift_eligible(df[c]):
+            out.append(c)
     return out
 
 

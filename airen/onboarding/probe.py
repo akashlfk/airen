@@ -81,6 +81,13 @@ def summarize_dataframe(df: pd.DataFrame, source: str = "?") -> ObservedSchema:
                 kind, sample = "numeric", float(num.dropna().iloc[0])
             else:
                 kind, sample = "categorical", str(first)
+                # A categorical that's actually serialized JSON (a dict/list sent
+                # as a string) explodes into dotted sub-columns once the tap bridges
+                # it to Phoenix — so it's not a usable single segment/feature. Treat
+                # it as nested, same as a real dict/list value.
+                fs = str(first).strip()
+                if fs[:1] in ("{", "[") and fs[-1:] in ("}", "]"):
+                    kind = "nested"
         out.fields.append(ObservedField(str(col), kind, sample, _safe_ndistinct(s)))
     return out
 
