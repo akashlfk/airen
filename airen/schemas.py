@@ -230,6 +230,17 @@ class IncidentRun(BaseModel):
     remediation_result: "RemediationResult | None" = None
     validator_phase1: "ValidatorVerdict | None" = None
     validator_phase2: "ValidatorVerdict | None" = None
+    # Airen's self-evaluation of the Investigator verdict (Arize evals): the graded
+    # dimensions + overall score, and how many reflection retries it took to pass.
+    investigator_eval: dict | None = Field(
+        default=None,
+        description="RcaEvalResult.to_dict() — code + LLM-as-judge grades for the RCA, "
+                    "also logged to Phoenix as span annotations.",
+    )
+    eval_reflections: int = Field(
+        default=0,
+        description="How many eval-gated reflection retries the Investigator took.",
+    )
     slack_permalink: str | None = None
     slack_message_ts: str | None = Field(
         default=None,

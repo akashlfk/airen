@@ -178,6 +178,14 @@ class AirenOrchestrator:
                 self.run.finished_at = _now()
                 self.run.final_state = self.state
                 span.set_attribute("airen.final_state", self.state.value)
+                # Cross-run learning: remember this incident (with its validated
+                # flag) so future investigations of the same class can recall it.
+                try:
+                    from airen.evals import learning
+
+                    learning.record_incident(self.run)
+                except Exception:
+                    pass
         return self.run
 
     def _refresh_repo_understanding(self) -> None:
@@ -331,21 +339,30 @@ class AirenOrchestrator:
             f"Investigating against repo {self.repo}…",
             agent="investigator",
         )
+
+        # Cross-run learning: recall this anomaly class's confirmed precedents and
+        # seed the Investigator with them (self-improvement across incidents).
+        exemplars = ""
+        try:
+            from airen.evals import learning
+
+            similar = learning.recall_similar(verdict)
+            exemplars = learning.exemplars_block(similar)
+            if similar:
+                self._transition(
+                    OrchestratorState.INVESTIGATING,
+                    f"Recalled {len(similar)} prior CONFIRMED incident(s) of this class as precedent.",
+                    agent="investigator",
+                )
+        except Exception:
+            pass
+
         t0 = time.perf_counter()
-        if is_mock_mode():
-            inv = mock_investigator_verdict(sentinel=verdict)
-        else:
-            msg = (
-                f"Investigate the following SentinelVerdict against GitHub repo `{self.repo}`. "
-                f"The Phoenix project is `{self.project_name}`. Find the root cause and return "
-                f"an InvestigatorVerdict.\n\nSentinelVerdict JSON:\n"
-                f"{verdict.model_dump_json(indent=2)}"
-                f"{self._context_block()}"
-            )
-            raw = await _run_agent_with_retry(investigator_agent, msg)
-            inv = InvestigatorVerdict.model_validate_json(extract_json(raw))
+        inv, eval_result, reflections = await self._investigate_with_reflection(verdict, exemplars)
         dt_ms = int((time.perf_counter() - t0) * 1000)
         self.run.investigator_verdict = inv
+        self.run.eval_reflections = reflections
+        self.run.investigator_eval = eval_result.to_dict() if eval_result else None
 
         top_commit = inv.code_evidence[0] if inv.code_evidence else None
         commit_str = (
@@ -360,6 +377,79 @@ class AirenOrchestrator:
             duration_ms=dt_ms,
             metadata={"confidence": inv.confidence, "n_evidence": len(inv.code_evidence)},
         )
+        # Surface the self-eval verdict as its own event (visible in the UI + logs).
+        if eval_result is not None:
+            self._transition(
+                OrchestratorState.ANOMALY_DETECTED,
+                f"Self-eval: RCA scored {eval_result.overall:.2f} "
+                f"({'PASS' if eval_result.passed else 'FAIL'}) "
+                f"after {reflections} reflection(s) — {eval_result.critique()[:120]}",
+                agent="evaluator",
+                metadata={"eval": eval_result.to_dict(), "reflections": reflections},
+            )
+
+    async def _investigate_with_reflection(self, verdict, exemplars: str):
+        """Run the Investigator, grade the verdict with Airen's own evals, and — if
+        it scores below the bar — feed it its OWN critique and re-investigate
+        (bounded). Returns (best_verdict, eval_result, n_reflections). Each attempt
+        is traced + graded so the score lift is visible in Phoenix.
+
+        In mock mode there's no LLM judge or reflection; the code evaluators still
+        grade the canned verdict so the eval surface is exercised offline."""
+        from airen.evals import learning
+        from airen.evals.rca_eval import evaluate_investigation, log_to_phoenix
+
+        base_msg = (
+            f"Investigate the following SentinelVerdict against GitHub repo `{self.repo}`. "
+            f"The Phoenix project is `{self.project_name}`. Find the root cause and return "
+            f"an InvestigatorVerdict.\n\nSentinelVerdict JSON:\n"
+            f"{verdict.model_dump_json(indent=2)}"
+        )
+        max_ref = 0 if is_mock_mode() else learning.max_reflections()
+        feedback = ""
+        best_inv = None
+        best_eval = None
+        reflections = 0
+
+        for attempt in range(max_ref + 1):
+            if is_mock_mode():
+                inv = mock_investigator_verdict(sentinel=verdict)
+                span_id = None
+            else:
+                msg = base_msg + exemplars + feedback + self._context_block()
+                raw, span_id = await self._run_investigator_traced(msg)
+                inv = InvestigatorVerdict.model_validate_json(extract_json(raw))
+
+            result = evaluate_investigation(verdict, inv, use_llm=not is_mock_mode())
+            try:
+                log_to_phoenix(result, span_id=span_id, project_name=self.project_name)
+            except Exception:
+                pass
+
+            if best_eval is None or result.overall > best_eval.overall:
+                best_inv, best_eval = inv, result
+
+            if not learning.should_reflect(result) or attempt >= max_ref:
+                break
+            feedback = learning.reflection_feedback(result)
+            reflections += 1
+            self._transition(
+                OrchestratorState.INVESTIGATING,
+                f"RCA scored {result.overall:.2f} (< {result.pass_threshold:.2f}) — "
+                f"reflecting on its own critique and re-investigating (#{reflections})…",
+                agent="evaluator",
+            )
+            await self._cooldown("before reflection retry")
+
+        return best_inv, best_eval, reflections
+
+    async def _run_investigator_traced(self, msg: str) -> tuple[str, str]:
+        """Run the Investigator inside an explicit span so we have a stable span_id
+        to attach eval annotations to. Returns (raw_output, span_id_hex)."""
+        with _tracer.start_as_current_span("airen.investigator") as span:
+            span_id = format(span.get_span_context().span_id, "016x")
+            raw = await _run_agent_with_retry(investigator_agent, msg)
+            return raw, span_id
 
     def _context_block(self) -> str:
         """Operator-provided service context (from service.context in the yaml),
