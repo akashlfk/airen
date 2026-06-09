@@ -114,6 +114,11 @@ class RepoManifest(BaseModel):
         default_factory=list,
         description="Candidate attributes_of_interest — module-level numeric hyperparam-like names",
     )
+    # Does this repo TRAIN the models, or only SERVE them? If serving-only, the
+    # training code lives elsewhere — onboarding asks for the training repo so
+    # Airen can check train↔serve parity.
+    has_training_code: bool = False
+    training_evidence: list[str] = Field(default_factory=list)
 
     # one-line narrative (optional; filled by the agent, possibly via LLM)
     summary: str | None = None

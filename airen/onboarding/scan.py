@@ -79,12 +79,14 @@ def _build_manifest(root: Path, *, source: str, is_remote: bool,
     trk = D.detect_tracking(root)
     feats = D.detect_feature_constants(root)
     app_type = D.classify_application(apis, frameworks, root)
+    has_training, training_evidence = D.detect_training_presence(root)
 
     return RepoManifest(
         source=source, is_remote=is_remote, commit_sha=commit_sha, default_branch=branch,
         languages=langs, frameworks=frameworks, dependencies=deps, application_type=app_type,
         models=models, apis=apis, serving=serving, observation=observation,
         observability=obs, tracking=trk, feature_constants=feats,
+        has_training_code=has_training, training_evidence=training_evidence,
     )
 
 

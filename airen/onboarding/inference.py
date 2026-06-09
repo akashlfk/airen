@@ -115,6 +115,29 @@ def infer_service_config(manifest: RepoManifest, service_name: str | None = None
             )
         cfg["github"] = github
 
+    # ── training code: present here, or in a separate repo? ──
+    # Train↔serve parity needs the TRAINING code. If this repo only SERVES models
+    # (no training signal found), ask the user for the training repo's GitHub link.
+    if manifest.models:
+        if manifest.has_training_code:
+            ev = manifest.training_evidence[0] if manifest.training_evidence else ""
+            notes.append(f"training code: found in this repo ({ev}) — train↔serve parity checkable here")
+        else:
+            notes.append(
+                "⚠ no training code found in this repo — it looks serving-only. "
+                "Airen will ask for the training repo so it can check train↔serve parity."
+            )
+            gaps.append(Gap(
+                key="github.training_repo",
+                prompt=(
+                    "Where is the TRAINING code for these models? Enter the training repo "
+                    "(owner/repo or GitHub URL) so Airen can compare training vs serving "
+                    "preprocessing for parity — blank if it's unavailable"
+                ),
+                default=None,
+                kind="str",
+            ))
+
     # ── serving topology — how the inference layer emits predictions ──
     st = manifest.serving
     # prediction_source = where Airen READS at RUNTIME (Sentinel/calibration).

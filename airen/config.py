@@ -70,6 +70,15 @@ class GithubConfig(BaseModel):
         default_factory=list,
         description="Feature-engineering attribute names that often appear as code constants",
     )
+    training_repo: str | None = Field(
+        default=None,
+        description="owner/repo (or GitHub URL) of the TRAINING code, when training "
+                    "lives in a separate repo from serving. Lets Airen check train↔serve "
+                    "parity. Set by onboarding when no training code is found in `repo`.",
+    )
+    training_branch: str | None = Field(
+        default=None, description="Branch of training_repo to read (default: its default branch)."
+    )
 
 
 class SlackConfig(BaseModel):

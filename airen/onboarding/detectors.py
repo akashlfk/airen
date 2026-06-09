@@ -394,6 +394,72 @@ def detect_tracking(root: Path):
 
 
 # ───────────────────────────────────────────────────────────────────────
+#  Training-code presence — does this repo TRAIN models, or only SERVE them?
+#  When a service only serves (training lives in a separate repo), onboarding
+#  asks the user for the training repo so Airen can check train↔serve parity.
+# ───────────────────────────────────────────────────────────────────────
+_SKIP_PATH = re.compile(r"(^|/)(tests?|conftest)(/|\.|_)", re.I)
+
+# A file/dir that looks like a TRAINING ENTRYPOINT (where models are produced).
+_TRAIN_LOC = re.compile(r"(?:^|/)(?:[^/]*train[^/]*|experiments?|finetune|model_training)(?:/|\.py$)", re.I)
+
+# Persisting a MODEL = training, wherever it appears (serving LOADS, never saves).
+_PERSIST_SIGNALS = [
+    (re.compile(r"\btorch\.save\s*\("), "saves a trained torch model (torch.save)"),
+    (re.compile(r"mlflow\.(?:log_model|autolog)"), "logs a model to mlflow"),
+    (re.compile(r"\bjoblib\.dump\s*\("), "persists a model (joblib.dump)"),
+    (re.compile(r"\.save_model\s*\("), "saves a model (.save_model)"),
+]
+
+# In-training-loop signals — counted ONLY inside a training-named location, because
+# serving code legitimately fits/splits per-request (we saw that in predict/processing).
+_TRAIN_LOOP_SIGNALS = [
+    (re.compile(r"\.backward\s*\("), "backprop (loss backward)"),
+    (re.compile(r"\boptimizer\.step\s*\("), "optimizer step"),
+    (re.compile(r"\btrain_test_split\s*\("), "train/test split"),
+    (re.compile(r"\.fit\s*\("), "estimator/model fit"),
+    (re.compile(r"mlflow\.(?:log_|start_run)"), "mlflow training run"),
+    (re.compile(r"\bGridSearchCV\b|\bRandomizedSearchCV\b"), "hyperparameter search"),
+]
+
+
+def detect_training_presence(root: Path, max_files: int = 1000) -> tuple[bool, list[str]]:
+    """Does this repo TRAIN the models, or only SERVE them? Returns
+    (has_training_code, evidence[file:line]). True if it persists a model anywhere,
+    or runs a training loop inside a training-named file/dir. A serving-only repo
+    (predict/ that loads models and may fit per-request scalers) reads as False —
+    so onboarding asks for the separate training repo. Biased to under-detect."""
+    evidence: list[str] = []
+    for p in _py_files(root)[:max_files]:
+        rel = _rel(root, p)
+        if _SKIP_PATH.search(rel):
+            continue
+        try:
+            text = p.read_text(errors="ignore")
+        except Exception:
+            continue
+
+        def _hit(pat, label):
+            m = pat.search(text)
+            if m:
+                evidence.append(f"{label} @ {rel}:{text[: m.start()].count(chr(10)) + 1}")
+                return True
+            return False
+
+        # model persistence anywhere → training
+        if any(_hit(pat, label) for pat, label in _PERSIST_SIGNALS):
+            pass
+        # training-loop signals only inside a training-named location
+        elif _TRAIN_LOC.search(rel):
+            for pat, label in _TRAIN_LOOP_SIGNALS:
+                if _hit(pat, label):
+                    break
+        if len(evidence) >= 8:
+            break
+    return (len(evidence) > 0), evidence
+
+
+# ───────────────────────────────────────────────────────────────────────
 #  Feature constants → attributes_of_interest candidates
 # ───────────────────────────────────────────────────────────────────────
 def detect_feature_constants(root: Path, max_results: int = 12) -> list[str]:
