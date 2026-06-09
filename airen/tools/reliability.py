@@ -120,19 +120,34 @@ _ID_NAME = re.compile(
 )
 
 
+# A value whose magnitude looks like an epoch timestamp (≈1.7e9 for seconds,
+# ≈1.7e12 for ms). Such a field is a clock, not a model feature — its values
+# advance with wall-time, so PSI between an earlier and a recent window is always
+# huge (the two halves are near-disjoint by construction). 1e8 sec ≈ 3.2 years, so
+# no real bounded feature (distance, duration, count) reaches it.
+_EPOCH_MAGNITUDE = 1e8
+
+
 def _drift_eligible(s: pd.Series) -> bool:
     """Is this column worth a PSI drift check? Numeric columns are fine (PSI bins
-    them) unless they're effectively a unique key; categorical/text columns only
-    if low-cardinality. High-cardinality categoricals, IDs, hashes and free text
-    make PSI explode on noise — the recent/earlier halves just carry different
-    label sets — so we skip them."""
+    them) unless they're effectively a unique key OR a timestamp/clock; categorical
+    /text columns only if low-cardinality. High-cardinality categoricals, IDs,
+    hashes, free text and timestamps make PSI explode on noise — the recent/earlier
+    halves just carry different values — so we skip them."""
     s = s.dropna()
     n = len(s)
     if n == 0:
         return False
     nu = _safe_nunique(s)
     if pd.api.types.is_numeric_dtype(s):
-        return not (nu > 50 and nu / n > 0.9)   # not a row-id-like numeric
+        if nu > 50 and nu / n > 0.9:
+            return False                         # row-id-like numeric
+        try:
+            if float(s.abs().median()) >= _EPOCH_MAGNITUDE:
+                return False                     # epoch-timestamp / clock field
+        except (TypeError, ValueError):
+            pass
+        return True
     return nu <= 50                              # low-cardinality categorical only
 
 
@@ -143,10 +158,13 @@ def _safe_nunique(s: pd.Series) -> int:
         return int(len({str(v) for v in s}))
 
 
-def _feature_columns(df: pd.DataFrame, error_attribute: str) -> list[str]:
+def _feature_columns(df: pd.DataFrame, error_attribute: str,
+                     exclude: frozenset[str] = frozenset()) -> list[str]:
     """The attributes to watch for drift. Prefers Phoenix's `input.*` convention;
     falls back to 'every column that isn't plumbing' for raw kafka/redshift rows.
-    Identifier-like and high-cardinality columns are excluded — PSI is noise there."""
+    Identifier-like, timestamp, high-cardinality, and operator-excluded columns are
+    dropped — PSI is noise there. `exclude` names are matched with or without the
+    `input.` prefix."""
     input_cols = [c for c in df.columns if c.startswith("input.")]
     if input_cols:
         candidates = input_cols
@@ -159,7 +177,10 @@ def _feature_columns(df: pd.DataFrame, error_attribute: str) -> list[str]:
         ]
     out: list[str] = []
     for c in candidates:
-        if _ID_NAME.search(c):          # identifier-like by name → skip
+        bare = c[len("input."):] if c.startswith("input.") else c
+        if c in exclude or bare in exclude:   # operator-excluded (timestamps/metadata)
+            continue
+        if _ID_NAME.search(c):                # identifier-like by name → skip
             continue
         if _drift_eligible(df[c]):
             out.append(c)
@@ -272,8 +293,10 @@ def compute_reliability_signals(
     if on("input_drift_auto") and halves is not None:
         earlier, recent = halves
         warn, crit = t("drift_psi_warn", 0.10), t("drift_psi_critical", 0.25)
+        obs = getattr(config, "observation", None)
+        drift_exclude = frozenset(getattr(obs, "drift_exclude", []) or [])
         worst_attr, worst_psi = None, 0.0
-        for col in _feature_columns(df, error_attribute):
+        for col in _feature_columns(df, error_attribute, drift_exclude):
             psi = _psi_two(earlier[col].dropna().tolist(), recent[col].dropna().tolist())
             if psi > worst_psi:
                 worst_attr, worst_psi = col, psi

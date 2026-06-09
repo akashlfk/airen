@@ -261,6 +261,7 @@ def _decide_status(
     lookback_minutes: int,
     worst_psi: float = 0.0,
     error_attr: str = "eval.absolute_error_minutes",
+    accuracy_expected: bool = True,
 ) -> dict:
     """Pure-Python status decision. No LLM involved."""
     # No-data branch
@@ -279,6 +280,20 @@ def _decide_status(
 
     # No-error-data branch (spans exist but missing MAE attribute)
     if overall_ratio is None:
+        # Prediction-only feed (no ground truth by design): a missing error
+        # attribute is EXPECTED, not a broken pipeline. Don't cry wolf — let the
+        # reliability battery (drift/volume/schema) decide health instead.
+        if not accuracy_expected:
+            return {
+                "suggested_status": "HEALTHY",
+                "suggested_severity_score": 0.0,
+                "suggested_action": "MONITOR",
+                "reason": (
+                    f"No `{error_attr}` in this feed — it's prediction-only (no ground "
+                    "truth), so accuracy isn't computable. EXPECTED for this service; "
+                    "health is judged on drift / volume / schema."
+                ),
+            }
         return {
             "suggested_status": "WARNING",
             "suggested_severity_score": 0.4,
@@ -590,7 +605,9 @@ def get_model_health_snapshot(
     custom_metric_dicts = [s.to_dict() for s in custom_metric_signals]
 
     if error_attr not in df.columns:
-        decision = _decide_status(int(len(df)), None, [], lookback_minutes, error_attr=error_attr)
+        accuracy_expected = bool(getattr(getattr(cfg, "observation", None), "has_ground_truth", True)) if cfg else True
+        decision = _decide_status(int(len(df)), None, [], lookback_minutes,
+                                  error_attr=error_attr, accuracy_expected=accuracy_expected)
         decision = _merge_reliability(decision, reliability_signals + custom_metric_signals)
         return {
             "project_name": project_name,

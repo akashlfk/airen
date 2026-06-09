@@ -367,6 +367,20 @@ class ObservationConfig(BaseModel):
         description="Span attributes to group by for per-segment health breakdowns "
                     "(set per service by onboarding; e.g. input.region)",
     )
+    has_ground_truth: bool = Field(
+        default=True,
+        description="Does this feed carry actuals/ground truth (so accuracy/MAE is "
+                    "computable)? False for prediction-only feeds (e.g. a raw model "
+                    "output topic) — then a missing error_attribute is EXPECTED, not a "
+                    "broken pipeline, and health is judged on drift/volume/schema only.",
+    )
+    drift_exclude: list[str] = Field(
+        default_factory=list,
+        description="Attributes to EXCLUDE from auto-drift (with or without the "
+                    "input. prefix). Use for timestamps / queue-time / monotonic "
+                    "metadata where PSI between time windows is meaningless "
+                    "(e.g. queuedTimeInSecondsDS).",
+    )
 
 
 class SentinelThresholds(BaseModel):

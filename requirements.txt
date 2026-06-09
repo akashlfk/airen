@@ -146,3 +146,4 @@ psycopg2-binary==2.9.12    # real Redshift
 mlflow-skinny==3.12.0      # real MLflow lineage
 slack_sdk==3.42.0          # Slack posting
 
+litellm==1.80.5

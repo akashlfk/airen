@@ -179,7 +179,13 @@ def infer_field_roles(observed: ObservedSchema) -> RoleProposal:
     observation = {
         "error_attribute": "eval.error",
         "segments": [f"input.{s}" for s in segs],
+        # No error/actual field in the live feed → it's prediction-only (no ground
+        # truth). Record that so Sentinel won't read a missing error attribute as a
+        # broken pipeline, and judges health on drift/volume/schema instead.
+        "has_ground_truth": bool(err or actual),
     }
+    if not (err or actual):
+        notes.append("ground truth: none in feed → accuracy disabled, drift/volume/schema only")
     # Reconcile problem_type from the REAL data (overrides graphify's code guess):
     # a score-like prediction (is_correct/label/proba) → classification; a plain
     # numeric prediction → regression.
