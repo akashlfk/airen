@@ -399,3 +399,38 @@ class RemediationResult(BaseModel):
 
 # Forward-reference resolution for IncidentRun (declared above IncidentReport).
 IncidentRun.model_rebuild()
+
+
+# ───────────────────────────────────────────────────────────────────────
+#  Train ↔ serve parity audit (the ParityAuditor agent's output)
+# ───────────────────────────────────────────────────────────────────────
+class ModelParityFinding(BaseModel):
+    """Per served-model verdict on how well its SERVING preprocessing matches the
+    TRAINING preprocessing it was paired to."""
+
+    model_family: str = Field(description="The served model variant, e.g. 'LSTM_cluster', 'PatchTST', 'DOW_XGB'.")
+    model_type: str = Field(default="", description="lstm | transformer | xgboost | regression | clustering | unknown")
+    served_at: str = Field(default="", description="Serving preprocessing location (file:line / module).")
+    trained_at: str = Field(default="", description="Paired training location, or 'NOT FOUND'.")
+    paired: bool = Field(description="Did the agent find a training counterpart to compare against?")
+    status: str = Field(
+        description="PARITY_OK | SKEW_RISK | SKEW_CONFIRMED | UNVERIFIABLE | NO_TRAINING_CODE"
+    )
+    skews: list[str] = Field(
+        default_factory=list,
+        description="Concrete mismatches (feature set/order, scaling, encoding, bucketing, windowing, missing step). Cite file:line.",
+    )
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    notes: str = Field(default="", description="1-3 sentences of reasoning / caveats.")
+
+
+class ParityReport(BaseModel):
+    """Service-wide train↔serve parity audit across the serving repo and the
+    (possibly separate) training repo, one finding per served model."""
+
+    service: str
+    serving_repo: str
+    training_repo: str | None = None
+    served_models: list[str] = Field(default_factory=list, description="Served model families the agent identified.")
+    findings: list[ModelParityFinding] = Field(default_factory=list)
+    summary: str = Field(default="", description="Executive summary: how many models, how many at risk, top skews.")
