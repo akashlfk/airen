@@ -877,12 +877,16 @@ class AirenOrchestrator:
         )
 
     async def _notify_step(self) -> None:
-        if not self.post_to_slack or not os.environ.get("SLACK_BOT_TOKEN", "").strip():
-            self._transition(
-                OrchestratorState.NOTIFYING,
-                "Slack disabled (no SLACK_BOT_TOKEN, or post_to_slack=False)",
-                agent=None,
+        # Resolve the channel up front. Slack is a SIDE-CHANNEL — a missing token,
+        # channel, or a post error must NEVER fail the incident cycle.
+        channel = (self.alert_channel or os.environ.get("SLACK_CHANNEL", "")).strip()
+        if not self.post_to_slack or not os.environ.get("SLACK_BOT_TOKEN", "").strip() or not channel:
+            why = (
+                "post_to_slack=False" if not self.post_to_slack
+                else "no SLACK_BOT_TOKEN" if not os.environ.get("SLACK_BOT_TOKEN", "").strip()
+                else "no channel (set slack.alert_channel or SLACK_CHANNEL)"
             )
+            self._transition(OrchestratorState.NOTIFYING, f"Slack skipped — {why}.", agent=None)
             return
 
         self._transition(OrchestratorState.NOTIFYING, "Posting incident to Slack…", agent="slack")
@@ -891,14 +895,21 @@ class AirenOrchestrator:
         t0 = time.perf_counter()
         from airen.adapters.slack import post_incident_report
 
-        # Per-service channel override if airen.yaml sets one; else env default.
-        result = post_incident_report(
-            self.run.incident_report,
-            incident_id=self.run.run_id,
-            channel=self.alert_channel,
-            jira_url=self.run.jira_issue_url,
-            jira_key=self.run.jira_issue_key,
-        )
+        try:
+            result = post_incident_report(
+                self.run.incident_report,
+                incident_id=self.run.run_id,
+                channel=channel,
+                jira_url=self.run.jira_issue_url,
+                jira_key=self.run.jira_issue_key,
+            )
+        except Exception as e:  # noqa: BLE001 — Slack must never break the cycle
+            self._transition(
+                OrchestratorState.NOTIFYING,
+                f"Slack post errored (skipped, cycle continues): {type(e).__name__}: {e}",
+                agent="slack",
+            )
+            return
         dt_ms = int((time.perf_counter() - t0) * 1000)
         if result.get("ok"):
             self.run.slack_permalink = result.get("permalink")
