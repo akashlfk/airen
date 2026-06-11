@@ -22,7 +22,7 @@ from google.adk.tools import FunctionTool
 
 from airen.adapters.github_mcp import build_github_mcp_toolset, is_github_mcp_enabled
 from airen.adapters.phoenix_mcp import build_phoenix_mcp_toolset, is_phoenix_mcp_enabled
-from airen.llm_factory import get_model_for, schema_appendix, supports_strict_output_schema
+from airen.llm_factory import get_model_for, schema_appendix
 from airen.schemas import InvestigatorVerdict
 from airen.tools.investigation import (
     detect_training_inference_mismatch,
@@ -143,15 +143,16 @@ Output the InvestigatorVerdict JSON only — no prose, no preamble.
 """.strip()
 
 
-_use_schema = supports_strict_output_schema()
-_instruction = INVESTIGATOR_INSTRUCTION if _use_schema else INVESTIGATOR_INSTRUCTION + schema_appendix(InvestigatorVerdict)
+# Structured output via PROMPT-BASED JSON (schema appended to the instruction,
+# parsed with extract_json by the orchestrator) on EVERY backend — NOT ADK's
+# output_schema. Reason: output_schema suppresses tool-calling, which would turn
+# OFF the Phoenix MCP server. The Arize track REQUIRES the agent to use Phoenix
+# MCP, so MCP must stay on — including on Gemini. This keeps MCP + structured
+# output coexisting on both Gemini (submission) and Azure (dev).
+_instruction = INVESTIGATOR_INSTRUCTION + schema_appendix(InvestigatorVerdict)
 
-# Tool list — start with our own deterministic tools, then optionally append the
-# Phoenix MCP server (REQUIRED by Arize hackathon track). When output_schema is
-# set, ADK requires the tool list to ONLY contain things it can validate; in
-# that case we keep MCP off to avoid agent-construction errors. Future: switch
-# to a function-call-based "submit_verdict" pattern when LLM is on Gemini and
-# we can re-enable strict output_schema alongside MCP.
+# Deterministic tools the agent interprets, plus the Phoenix MCP server (Arize
+# requirement) and GitHub MCP when enabled.
 _tools: list = [
     FunctionTool(func=query_anomaly_spans),
     FunctionTool(func=find_commits_introducing_pattern),
@@ -163,11 +164,11 @@ _tools: list = [
     FunctionTool(func=find_symbol_callers),
     FunctionTool(func=find_symbol_definition),
 ]
-if not _use_schema and is_phoenix_mcp_enabled():
+if is_phoenix_mcp_enabled():
     _phoenix_mcp = build_phoenix_mcp_toolset()
     if _phoenix_mcp is not None:
         _tools.append(_phoenix_mcp)
-if not _use_schema and is_github_mcp_enabled():
+if is_github_mcp_enabled():
     _github_mcp = build_github_mcp_toolset()
     if _github_mcp is not None:
         _tools.append(_github_mcp)
@@ -183,5 +184,4 @@ root_agent = Agent(
     ),
     instruction=_instruction,
     tools=_tools,
-    **({"output_schema": InvestigatorVerdict} if _use_schema else {}),
 )
