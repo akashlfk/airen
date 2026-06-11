@@ -1,0 +1,69 @@
+# Airen demo service — fully SYNTHETIC, masked multi-model ETA prediction service.
+# Mirrors the shape of a real multi-model serving feed but contains no real data,
+# no customer names, and points at NO source repo (so nothing proprietary is ever
+# shown). Seed it with: python -m airen.run_seed_demo --service eta-demo
+service:
+  name: eta-demo
+  description: Synthetic multi-model ETA service (LSTM / PatchTST / XGBoost) — demo only
+  owner_team: ml-platform
+
+phoenix:
+  project_name: eta-demo-prediction
+  collector_endpoint: http://localhost:6006
+
+serving:
+  mode: async-kafka          # predictions bridged into Phoenix (here: seeded)
+  prediction_source: phoenix
+
+# Prediction-only feed (no ground truth in the stream) — same as a real model
+# output topic. Health is judged on drift / volume / schema, not accuracy.
+observation:
+  problem_type: regression
+  error_attribute: eval.error
+  has_ground_truth: false
+  metric_unit: minutes
+  metric_direction: lower_is_better
+  segments:
+    - input.model_family
+    - input.model_sub_type
+    - input.model_haul_type
+    - input.org_state
+    - input.dest_state
+    - input.season
+    - input.location_provider
+
+sentinel:
+  baseline_mae_minutes: 150.0
+  warning_ratio: 1.2
+  critical_ratio: 2.0
+  default_lookback_minutes: 240    # covers the seeded ~180-min window
+
+reliability:
+  enable: true
+  drift_psi_warn: 0.10
+  drift_psi_critical: 0.25
+
+# Multi-model awareness — the served variants (masked, generic types).
+model_registry:
+  - model_family: lstm_cluster
+    experiment_id: DEMO-LSTM
+    expected_repo: null
+    notes: clustered multi-head LSTM (synthetic)
+  - model_family: patchtst_v1
+    experiment_id: DEMO-PATCHTST
+    expected_repo: null
+    notes: PatchTST transformer classifier (synthetic)
+  - model_family: xgb_classifier
+    experiment_id: DEMO-XGB
+    expected_repo: null
+    notes: gradient-boosted classifier (synthetic)
+  - model_family: regression_v2
+    experiment_id: DEMO-REG
+    expected_repo: null
+    notes: tabular regression (synthetic)
+
+# Side channels OFF for a clean, self-contained demo.
+slack:
+  enable: false
+jira:
+  enable: false
