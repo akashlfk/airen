@@ -98,20 +98,27 @@ def schema_appendix(schema_cls: Any) -> str:
     )
 
 
+def _strip_trailing_commas(s: str) -> str:
+    """Remove trailing commas before } or ] — Gemini/other LLMs emit these and
+    strict json.loads (used by pydantic.model_validate_json) rejects them."""
+    return re.sub(r",(\s*[}\]])", r"\1", s)
+
+
 def extract_json(text: str) -> str:
     """Pull the first JSON object out of LLM text output.
 
-    LLMs sometimes wrap their JSON in code fences or add a sentence of preamble
-    even when instructed not to. This finds the first {...} block and returns it.
+    LLMs sometimes wrap their JSON in code fences, add a sentence of preamble, or
+    leave a trailing comma even when instructed not to. This finds the first {...}
+    block and returns it, cleaned of trailing commas so strict parsers accept it.
     """
     if not text:
         return text
     # Try fenced code block first
     fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
     if fenced:
-        return fenced.group(1)
+        return _strip_trailing_commas(fenced.group(1))
     # Try raw object — match outermost braces
     raw = re.search(r"\{.*\}", text, re.DOTALL)
     if raw:
-        return raw.group(0)
-    return text
+        return _strip_trailing_commas(raw.group(0))
+    return _strip_trailing_commas(text)
