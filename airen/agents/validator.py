@@ -83,8 +83,9 @@ class Validator:
             phase=2,
             status=ValidatorStatus.DEFERRED,
             summary=(
-                "Phase 2 (T+24h actuals check via Redshift tl_eta_datamart) requires the FK VM. "
-                "Run this on the deployment target after 24h of real traffic."
+                "Phase 2 (delayed ground-truth check at T+24h) compares predictions against "
+                "actuals once they land in the analytics warehouse — deferred until 24h of "
+                "real traffic has accrued on the deployment target."
             ),
             lookback_minutes=0,
             n_spans_observed=0,
